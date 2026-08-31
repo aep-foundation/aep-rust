@@ -33,7 +33,7 @@ Rust 1.88 or newer is required. Run the complete merge gate with:
 make verify
 ```
 
-Once the crates contain executable source, generate the local coverage report with:
+Generate the local coverage report with:
 
 ```sh
 make coverage

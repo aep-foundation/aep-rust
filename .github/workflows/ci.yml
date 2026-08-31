@@ -10,6 +10,32 @@ permissions:
   contents: read
 
 jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install 1.88.0 --profile minimal --component llvm-tools-preview
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov@0.8.7
+          fallback: none
+
+      - name: Generate coverage report
+        run: make coverage
+        env:
+          RUSTUP_TOOLCHAIN: 1.88.0
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v7
+        with:
+          name: aep-rust-coverage
+          path: lcov.info
+          if-no-files-found: error
+          retention-days: 7
+
   verify:
     runs-on: ubuntu-latest
     strategy:
