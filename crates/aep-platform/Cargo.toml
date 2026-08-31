@@ -1,0 +1,20 @@
+[package]
+name = "aep-platform"
+description = "Platform-hosted Agent identity support for the Agent Enrollment Protocol."
+documentation = "https://docs.rs/aep-platform"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "README.md"
+
+[dependencies]
+aep-core.workspace = true
+
+[lints]
+workspace = true

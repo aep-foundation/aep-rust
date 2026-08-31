@@ -1,0 +1,6 @@
+/.conformance/
+/.interop/
+/.release/
+/target/
+lcov.info
+.DS_Store
