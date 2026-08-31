@@ -13,5 +13,25 @@ keywords.workspace = true
 categories.workspace = true
 readme = "README.md"
 
+[dependencies]
+async-trait.workspace = true
+chrono.workspace = true
+ed25519-dalek.workspace = true
+http.workspace = true
+jwt-compact.workspace = true
+p256.workspace = true
+percent-encoding.workspace = true
+regex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_path_to_error.workspace = true
+thiserror.workspace = true
+time.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+futures.workspace = true
+proptest.workspace = true
+
 [lints]
 workspace = true

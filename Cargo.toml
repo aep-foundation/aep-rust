@@ -24,3 +24,19 @@ unsafe_code = "forbid"
 [workspace.dependencies]
 aep-core = { version = "0.1.0", path = "crates/aep-core" }
 aep-platform = { version = "0.1.0", path = "crates/aep-platform" }
+async-trait = "0.1.92"
+chrono = { version = "0.4.42", default-features = false, features = ["std"] }
+ed25519-dalek = { version = "2.2.0", default-features = false, features = ["fast", "pem", "std", "zeroize"] }
+futures = "0.3.34"
+http = "1.5.0"
+jwt-compact = { version = "0.8.0", default-features = false, features = ["ed25519-dalek", "p256", "std"] }
+p256 = { version = "0.13.2", default-features = false, features = ["ecdsa", "pem", "std"] }
+percent-encoding = "2.3.2"
+proptest = { version = "1.11.0", default-features = false, features = ["std"] }
+regex = { version = "1.13.1", default-features = false, features = ["std", "perf"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+serde_path_to_error = "0.1.20"
+thiserror = "2.0.20"
+time = { version = "0.3.55", features = ["parsing"] }
+url = "2.5.8"
