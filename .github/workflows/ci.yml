@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        rust:
+          - "1.88.0"
+          - stable
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install "${{ matrix.rust }}" --profile minimal --component clippy,rustfmt
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny@0.19.8
+          fallback: none
+
+      - name: Verify workspace
+        run: make verify
+        env:
+          RUSTUP_TOOLCHAIN: ${{ matrix.rust }}
