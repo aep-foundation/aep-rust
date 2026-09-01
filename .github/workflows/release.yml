@@ -1,0 +1,186 @@
+name: Release
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: aep-rust-release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    if: github.repository == 'aep-foundation/aep-rust'
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install stable --profile minimal --component clippy,rustfmt
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny@0.19.8
+          fallback: none
+
+      - name: Validate release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
+            echo "Releases must run from main." >&2
+            exit 1
+          fi
+          version=$(cargo metadata --no-deps --format-version 1 | jq --raw-output '.packages[] | select(.name == "aep-core") | .version')
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "The workspace version must be a stable semantic version such as 0.1.0." >&2
+            exit 1
+          fi
+          for package in aep-core aep-platform aep-agent aep-service aep-tower aep-axum; do
+            package_version=$(cargo metadata --no-deps --format-version 1 | jq --arg package "$package" --raw-output '.packages[] | select(.name == $package) | .version')
+            if [[ "$package_version" != "$version" ]]; then
+              echo "$package must use workspace version $version." >&2
+              exit 1
+            fi
+            while read -r dependency requirement; do
+              if [[ "$requirement" != "^$version" ]]; then
+                echo "$package dependency $dependency must require ^$version." >&2
+                exit 1
+              fi
+            done < <(cargo metadata --no-deps --format-version 1 | jq --arg package "$package" --raw-output '.packages[] | select(.name == $package) | .dependencies[] | select(.name == "aep-core" or .name == "aep-platform" or .name == "aep-agent" or .name == "aep-service" or .name == "aep-tower" or .name == "aep-axum") | "\(.name) \(.req)"')
+          done
+          tag="v$version"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists." >&2
+            exit 1
+          fi
+          if git rev-parse --verify "refs/tags/$tag" >/dev/null 2>&1; then
+            tag_commit=$(git rev-list -n 1 "$tag")
+            if [[ "$tag_commit" != "$GITHUB_SHA" ]]; then
+              echo "Tag $tag does not identify the selected main commit." >&2
+              exit 1
+            fi
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Check out AEP specifications
+        uses: actions/checkout@v7
+        with:
+          repository: aep-foundation/aep-specs
+          path: .conformance/aep-specs
+
+      - name: Check out Node.js reference implementation
+        uses: actions/checkout@v7
+        with:
+          repository: aep-foundation/aep-node
+          path: .conformance/aep-node
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+          bundler-cache: true
+          working-directory: .conformance/aep-specs/ietf
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - run: corepack enable
+
+      - name: Install Node.js reference implementation
+        run: pnpm --dir .conformance/aep-node install --frozen-lockfile
+
+      - name: Verify release
+        run: make verify consumer-smoke conformance interoperability
+        env:
+          AEP_NODE_DIR: .conformance/aep-node
+          AEP_RUST_VERSION: ${{ steps.release.outputs.version }}
+          AEP_SPECS_DIR: .conformance/aep-specs
+          RUSTUP_TOOLCHAIN: stable
+
+      - name: Upload conformance reports
+        uses: actions/upload-artifact@v7
+        with:
+          name: aep-rust-release-conformance
+          path: .conformance/reports/*.json
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    needs: verify
+    environment: release
+    permissions:
+      attestations: write
+      contents: write
+      id-token: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install stable --profile minimal
+
+      - name: Download conformance reports
+        uses: actions/download-artifact@v8
+        with:
+          name: aep-rust-release-conformance
+          path: .conformance/reports
+
+      - name: Authenticate to crates.io
+        id: crates
+        uses: rust-lang/crates-io-auth-action@v1
+
+      - name: Publish crates
+        run: ./scripts/publish-crates.sh "${{ needs.verify.outputs.version }}"
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.crates.outputs.token }}
+
+      - name: Verify crates.io consumer
+        run: ./scripts/verify-consumer.sh
+        env:
+          AEP_CONSUMER_SOURCE: registry
+          AEP_RUST_VERSION: ${{ needs.verify.outputs.version }}
+
+      - name: Package release archives
+        run: ./scripts/package-release.sh "${{ needs.verify.outputs.version }}"
+
+      - name: Attest release archives
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: .release/*.crate
+
+      - name: Create release tag
+        env:
+          TAG: ${{ needs.verify.outputs.tag }}
+        run: |
+          if git rev-parse --verify "refs/tags/$TAG" >/dev/null 2>&1; then
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag --annotate "$TAG" --message "AEP Rust $TAG" "$GITHUB_SHA"
+          git push origin "$TAG"
+
+      - name: Publish GitHub release
+        run: >-
+          gh release create "${{ needs.verify.outputs.tag }}"
+          .conformance/reports/agent.json#aep-rust-agent-conformance.json
+          .conformance/reports/platform.json#aep-rust-platform-conformance.json
+          .conformance/reports/service.json#aep-rust-service-conformance.json
+          .release/*.crate
+          --generate-notes
+          --title "AEP Rust ${{ needs.verify.outputs.tag }}"
+          --verify-tag
+        env:
+          GH_TOKEN: ${{ github.token }}

@@ -49,3 +49,11 @@ specific walkthrough with `cargo run -p aep-examples --bin <name>`.
 
 The normative protocol is maintained in `aep-foundation/aep-specs`. Confirm draft, schema,
 registry, and conformance behavior there before implementing or changing wire behavior.
+
+## Releases
+
+All publishable crates share one stable semantic version and are published in dependency order.
+The manual GitHub `Release` workflow accepts only `main`, executes the complete verification,
+consumer, conformance, and interoperability gates, and authenticates to crates.io through Trusted
+Publishing. The workflow verifies a fresh registry consumer before creating the matching tag and
+GitHub release.
