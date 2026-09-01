@@ -83,6 +83,14 @@ Generate the local coverage report with:
 make coverage
 ```
 
+Run the shared AEP conformance harness for the Agent, Service, and Platform roles with:
+
+```sh
+make conformance
+```
+
+The harness writes machine-readable reports to `.conformance/reports/`.
+
 See [DEVELOPMENT.md](./DEVELOPMENT.md) for the contributor workflow and
 [`aep-specs`](https://github.com/aep-foundation/aep-specs) for the normative drafts, schemas,
 registries, examples, and test vectors.

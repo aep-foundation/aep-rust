@@ -10,6 +10,40 @@ permissions:
   contents: read
 
 jobs:
+  conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check out AEP specifications
+        uses: actions/checkout@v7
+        with:
+          repository: aep-foundation/aep-specs
+          path: .conformance/aep-specs
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+          bundler-cache: true
+          working-directory: .conformance/aep-specs/ietf
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install 1.88.0 --profile minimal
+
+      - name: Run shared conformance harness
+        run: make conformance
+        env:
+          AEP_SPECS_DIR: .conformance/aep-specs
+          RUSTUP_TOOLCHAIN: 1.88.0
+
+      - name: Upload conformance reports
+        uses: actions/upload-artifact@v7
+        with:
+          name: aep-rust-conformance
+          path: .conformance/reports/*.json
+          if-no-files-found: error
+          retention-days: 7
+
   coverage:
     runs-on: ubuntu-latest
     steps:

@@ -1,7 +1,10 @@
-.PHONY: coverage dependency docs format format-check lint package test verify
+.PHONY: conformance coverage dependency docs format format-check lint package test verify
+
+conformance:
+	./scripts/run-conformance.sh
 
 coverage:
-	cargo llvm-cov --workspace --all-features --locked --lcov --output-path lcov.info
+	cargo llvm-cov --workspace --all-features --locked --exclude aep-conformance --lcov --output-path lcov.info
 
 dependency:
 	cargo deny check
