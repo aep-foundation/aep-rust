@@ -41,6 +41,9 @@ The command router honors the Service's configured `endpoint_base`. Apply the au
 only to protected application routes. Successful authentication makes `AepPrincipal` available to
 the handler; rejected authentication returns the complete AEP challenge without running it.
 
+See [`aep-service-axum`](../../examples/aep-service-axum/) for a runnable server with every AEP
+command, an API-key Grant Type, and a protected application resource.
+
 The underlying `aep-service` and `aep-tower` crates remain independently usable. See the
 [workspace guide](../../README.md) and the
 [AEP specifications](https://github.com/aep-foundation/aep-specs).

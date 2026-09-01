@@ -3,6 +3,13 @@
 Agent-side inspection, enrollment, credential, lifecycle, and protected-resource authentication
 workflows for the Agent Enrollment Protocol.
 
+## Install
+
+```toml
+[dependencies]
+aep-agent = "0.1"
+```
+
 ## What it provides
 
 - `Client` and Service-scoped `Session` handles for Inspect, Enroll, Status, Grant, and Revoke.
@@ -36,6 +43,10 @@ Call `inspect` before presenting capabilities, `enroll` with the requested Claim
 `wait_for_active` when Enroll returns a pending state. Grant stores built-in credentials after it
 confirms active enrollment. `authentication` returns the HTTP fields for a protected resource on
 the same Service origin.
+
+The [`aep-local-lifecycle`](../../examples/aep-local-lifecycle/) example executes Inspect, Enroll,
+Status, API-key Grant, protected-resource authentication, targeted Revoke, and JWT fallback with
+real assertions and the Service implementation.
 
 Authentication methods are never inferred. If Inspect omits `authentication`, protected-resource
 authentication fails. When credentials and `aep-jwt` are advertised, the Agent tries stored

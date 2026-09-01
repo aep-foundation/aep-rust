@@ -39,10 +39,17 @@ restarts.
 
 ## Connect HTTP routes
 
-Expose `service.inspect_document()` at `/.well-known/aep`. Route the four authenticated commands to
-`Service::enroll`, `Service::status`, `Service::grant`, and `Service::revoke`. Each command returns a
-`ServiceResponse` containing the HTTP status, headers, and a typed `ResponseBody`; use
-`ResponseBody::to_json()` for the wire body.
+Use [`aep-axum`](../aep-axum/) for direct Axum integration or [`aep-tower`](../aep-tower/) for a
+reusable Tower Service and authentication layer. Both adapters are optional.
+
+When integrating another HTTP stack, expose `service.inspect_document()` at `/.well-known/aep`.
+Route the four authenticated commands to `Service::enroll`, `Service::status`, `Service::grant`,
+and `Service::revoke`. Each command returns a `ServiceResponse` containing the HTTP status, headers,
+and a typed `ResponseBody`; use `ResponseBody::to_json()` for the wire body.
+
+The [`aep-service-axum`](../../examples/aep-service-axum/) example mounts every command and protects
+an application resource. The [`aep-local-lifecycle`](../../examples/aep-local-lifecycle/) example
+shows the direct Service boundary without a web framework.
 
 `Enroll`, `Grant`, and `Revoke` require a non-empty `Idempotency-Key` value through
 `IdempotentCommandOptions`. `Status` uses `AuthenticatedCommandOptions`. The application adapter is
