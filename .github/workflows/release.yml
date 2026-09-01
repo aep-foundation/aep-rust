@@ -97,7 +97,8 @@ jobs:
       - run: corepack enable
 
       - name: Install Node.js reference implementation
-        run: pnpm --dir .conformance/aep-node install --frozen-lockfile
+        working-directory: .conformance/aep-node
+        run: pnpm install --frozen-lockfile
 
       - name: Verify release
         run: make verify consumer-smoke conformance interoperability
