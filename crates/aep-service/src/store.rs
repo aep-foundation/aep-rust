@@ -159,6 +159,22 @@ impl MemoryCommandIdempotencyStore {
             .or_default()
             .clone())
     }
+
+    fn release_command_lock(
+        &self,
+        key: &IdempotencyKey,
+        command_lock: &IdempotencyLock,
+    ) -> Result<(), ServiceError> {
+        let mut locks = self.locks.lock().map_err(lock_error)?;
+        if locks
+            .get(key)
+            .is_some_and(|current| Arc::ptr_eq(current, command_lock))
+            && Arc::strong_count(command_lock) == 2
+        {
+            locks.remove(key);
+        }
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -198,11 +214,38 @@ impl CommandIdempotencyStore for MemoryCommandIdempotencyStore {
                 }
             }
         };
-        self.locks.lock().map_err(lock_error)?.remove(&key);
+        self.release_command_lock(&key, &command_lock)?;
         result
     }
 }
 
 fn lock_error<T>(_error: std::sync::PoisonError<T>) -> ServiceError {
     ServiceError::Store("AEP Service memory store lock is poisoned".to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retains_an_idempotency_lock_while_another_request_holds_it() {
+        let store = MemoryCommandIdempotencyStore::default();
+        let key = ("did:web:agent.example".to_owned(), "request-1".to_owned());
+        let first = store.command_lock(&key).expect("first lock");
+        let waiting = store.command_lock(&key).expect("waiting lock");
+
+        store
+            .release_command_lock(&key, &first)
+            .expect("retain lock");
+        let concurrent = store.command_lock(&key).expect("concurrent lock");
+        assert!(Arc::ptr_eq(&first, &waiting));
+        assert!(Arc::ptr_eq(&first, &concurrent));
+
+        drop(waiting);
+        drop(concurrent);
+        store
+            .release_command_lock(&key, &first)
+            .expect("release lock");
+        assert!(!store.locks.lock().expect("locks").contains_key(&key));
+    }
 }

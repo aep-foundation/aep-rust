@@ -1536,6 +1536,63 @@ fn aep_response(body: Vec<u8>) -> Response {
     }
 }
 
+#[test]
+fn redacts_agent_credentials_from_debug_output() {
+    let issued_at = OffsetDateTime::parse("2026-08-31T12:00:00Z", &Rfc3339).expect("time");
+    let record = CredentialRecord {
+        credential_id: "credential-1".to_owned(),
+        expires_at: issued_at + time::Duration::hours(1),
+        grant_type: GrantType::ApiKey,
+        issued_at,
+        payload: serde_json::json!({"api_key": "record-secret"}),
+        service_did: "did:web:service.example".to_owned(),
+        service_url: Url::parse("https://service.example").expect("URL"),
+    };
+    let grant = GrantResult {
+        credential: None,
+        grant_type: GrantType::Other("custom".to_owned()),
+        raw: serde_json::json!({"credential": "grant-secret"}),
+    };
+    let authentication = AuthenticationResult {
+        headers: HeaderMap::from_iter([(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer authentication-secret"),
+        )]),
+        method: AuthenticationMethod::OAuthBearer,
+    };
+    let authentication_options = AuthenticationOptions {
+        carrier: AuthorizationCarrier::Standard,
+        client_assertion_only: false,
+        credential_id: Some("credential-1".to_owned()),
+        grant_type: Some(GrantType::ApiKey),
+        resource: Url::parse("https://service.example/path?token=options-secret").expect("URL"),
+    };
+    let pending = PlatformPendingSign {
+        identity: AgentIdentity {
+            agent_did: "did:web:agent.example".to_owned(),
+            identity_method: IdentityMethod::DidWeb,
+            metadata: BTreeMap::new(),
+            service_did: "did:web:service.example".to_owned(),
+            signing_algorithms: vec![SigningAlgorithm::EdDsa],
+        },
+        platform_context: BTreeMap::from([(
+            "credential".to_owned(),
+            serde_json::json!("context-secret"),
+        )]),
+        retry_after: std::time::Duration::from_secs(1),
+    };
+    for output in [
+        format!("{record:?}"),
+        format!("{grant:?}"),
+        format!("{authentication:?}"),
+        format!("{authentication_options:?}"),
+        format!("{pending:?}"),
+    ] {
+        assert!(!output.contains("secret"));
+        assert!(output.contains("[REDACTED]"));
+    }
+}
+
 #[tokio::test]
 async fn reqwest_transport_sends_requests_and_bounds_responses() {
     use std::io::{Read as _, Write as _};

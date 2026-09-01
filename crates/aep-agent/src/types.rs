@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use std::{collections::BTreeMap, fmt, sync::Arc, time::Duration};
 
 use aep_core::{
     AssertionOperation, AuthenticationMethod, BuiltInGrantResponse, ClaimValues,
@@ -71,7 +71,7 @@ pub trait Delay: Send + Sync {
     async fn sleep(&self, duration: Duration);
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct CredentialRecord {
     pub credential_id: String,
     pub expires_at: OffsetDateTime,
@@ -80,6 +80,21 @@ pub struct CredentialRecord {
     pub payload: Value,
     pub service_did: String,
     pub service_url: Url,
+}
+
+impl fmt::Debug for CredentialRecord {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CredentialRecord")
+            .field("credential_id", &self.credential_id)
+            .field("expires_at", &self.expires_at)
+            .field("grant_type", &self.grant_type)
+            .field("issued_at", &self.issued_at)
+            .field("payload", &"[REDACTED]")
+            .field("service_did", &self.service_did)
+            .field("service_url", &"[REDACTED]")
+            .finish()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -193,11 +208,22 @@ pub struct GrantOptions {
     pub requested_scopes: Vec<String>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct GrantResult {
     pub credential: Option<BuiltInGrantResponse>,
     pub grant_type: GrantType,
     pub raw: Value,
+}
+
+impl fmt::Debug for GrantResult {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("GrantResult")
+            .field("credential", &self.credential)
+            .field("grant_type", &self.grant_type)
+            .field("raw", &"[REDACTED]")
+            .finish()
+    }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -223,7 +249,7 @@ impl Default for WaitOptions {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct AuthenticationOptions {
     pub carrier: aep_core::AuthorizationCarrier,
     pub client_assertion_only: bool,
@@ -232,10 +258,33 @@ pub struct AuthenticationOptions {
     pub resource: Url,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+impl fmt::Debug for AuthenticationOptions {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AuthenticationOptions")
+            .field("carrier", &self.carrier)
+            .field("client_assertion_only", &self.client_assertion_only)
+            .field("credential_id", &self.credential_id)
+            .field("grant_type", &self.grant_type)
+            .field("resource", &"[REDACTED]")
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq)]
 pub struct AuthenticationResult {
     pub headers: HeaderMap,
     pub method: AuthenticationMethod,
+}
+
+impl fmt::Debug for AuthenticationResult {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AuthenticationResult")
+            .field("headers", &"[REDACTED]")
+            .field("method", &self.method)
+            .finish()
+    }
 }
 
 pub(crate) fn assertion_operation(command: &Command) -> Option<AssertionOperation> {

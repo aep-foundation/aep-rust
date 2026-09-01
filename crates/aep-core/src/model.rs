@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, fmt};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -305,7 +305,7 @@ pub struct InspectDocument {
     pub additional: AdditionalMembers,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Default, Deserialize, PartialEq, Serialize)]
 pub struct ContactAddressPrimary {
     #[serde(
         default,
@@ -345,7 +345,13 @@ pub struct ContactAddressPrimary {
     pub additional: AdditionalMembers,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+impl fmt::Debug for ContactAddressPrimary {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ContactAddressPrimary([REDACTED])")
+    }
+}
+
+#[derive(Clone, Default, Deserialize, PartialEq, Serialize)]
 pub struct ClaimValues {
     #[serde(
         default,
@@ -398,6 +404,12 @@ pub struct ClaimValues {
     pub person_username: Option<String>,
     #[serde(flatten)]
     pub additional: AdditionalMembers,
+}
+
+impl fmt::Debug for ClaimValues {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ClaimValues([REDACTED])")
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
@@ -616,7 +628,7 @@ where
     Ok(Option::<Vec<String>>::deserialize(deserializer)?.unwrap_or_default())
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Deserialize, PartialEq, Serialize)]
 pub struct OAuthBearerGrantResponse {
     pub access_token: String,
     pub credential_id: String,
@@ -628,7 +640,21 @@ pub struct OAuthBearerGrantResponse {
     pub additional: AdditionalMembers,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+impl fmt::Debug for OAuthBearerGrantResponse {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("OAuthBearerGrantResponse")
+            .field("access_token", &"[REDACTED]")
+            .field("credential_id", &self.credential_id)
+            .field("expires_at", &self.expires_at)
+            .field("scopes", &self.scopes)
+            .field("token_type", &self.token_type)
+            .field("additional", &"[REDACTED]")
+            .finish()
+    }
+}
+
+#[derive(Clone, Deserialize, PartialEq, Serialize)]
 pub struct ApiKeyGrantResponse {
     pub api_key: String,
     pub credential_id: String,
@@ -640,7 +666,21 @@ pub struct ApiKeyGrantResponse {
     pub additional: AdditionalMembers,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+impl fmt::Debug for ApiKeyGrantResponse {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ApiKeyGrantResponse")
+            .field("api_key", &"[REDACTED]")
+            .field("credential_id", &self.credential_id)
+            .field("expires_at", &self.expires_at)
+            .field("header", &self.header)
+            .field("scopes", &self.scopes)
+            .field("additional", &"[REDACTED]")
+            .finish()
+    }
+}
+
+#[derive(Clone, Deserialize, PartialEq, Serialize)]
 pub struct BasicGrantResponse {
     pub credential_id: String,
     pub expires_at: String,
@@ -656,6 +696,21 @@ pub struct BasicGrantResponse {
     pub username: String,
     #[serde(flatten)]
     pub additional: AdditionalMembers,
+}
+
+impl fmt::Debug for BasicGrantResponse {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("BasicGrantResponse")
+            .field("credential_id", &self.credential_id)
+            .field("expires_at", &self.expires_at)
+            .field("password", &"[REDACTED]")
+            .field("realm", &self.realm)
+            .field("scopes", &self.scopes)
+            .field("username", &self.username)
+            .field("additional", &"[REDACTED]")
+            .finish()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -675,10 +730,21 @@ impl BuiltInGrantResponse {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProtectedResourceAuthorization {
     pub carrier: AuthorizationCarrier,
     pub scheme: CredentialScheme,
     pub credentials: String,
+}
+
+impl fmt::Debug for ProtectedResourceAuthorization {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProtectedResourceAuthorization")
+            .field("carrier", &self.carrier)
+            .field("scheme", &self.scheme)
+            .field("credentials", &"[REDACTED]")
+            .finish()
+    }
 }

@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use std::{collections::BTreeMap, fmt, sync::Arc, time::Duration};
 
 use aep_core::{
     AssertionOperation, ClientAssertionClaims, ClientAssertionVerifyingKey, ErrorCode,
@@ -145,7 +145,7 @@ pub enum SignStatus {
     Pending,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SignRequest {
     pub jti: String,
@@ -167,7 +167,21 @@ pub struct SignRequest {
     pub service_did: String,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+impl fmt::Debug for SignRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SignRequest")
+            .field("jti", &self.jti)
+            .field("lifetime_seconds", &self.lifetime_seconds)
+            .field("op", &self.op)
+            .field("platform_context", &"[REDACTED]")
+            .field("resource", &self.resource.as_ref().map(|_| "[REDACTED]"))
+            .field("service_did", &self.service_did)
+            .finish()
+    }
+}
+
+#[derive(Clone, Deserialize, PartialEq, Serialize)]
 pub struct SignResponse {
     #[serde(
         default,
@@ -218,7 +232,28 @@ pub struct SignResponse {
     pub additional: BTreeMap<String, Value>,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+impl fmt::Debug for SignResponse {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SignResponse")
+            .field("agent_did", &self.agent_did)
+            .field(
+                "client_assertion",
+                &self.client_assertion.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("expires_at", &self.expires_at)
+            .field("issued_at", &self.issued_at)
+            .field("jti", &self.jti)
+            .field("platform_context", &"[REDACTED]")
+            .field("retry_after_seconds", &self.retry_after_seconds)
+            .field("service_did", &self.service_did)
+            .field("status", &self.status)
+            .field("additional", &"[REDACTED]")
+            .finish()
+    }
+}
+
+#[derive(Clone, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct VerificationRequest {
     pub client_assertion: String,
@@ -230,6 +265,18 @@ pub struct VerificationRequest {
     )]
     pub resource: Option<String>,
     pub service_did: String,
+}
+
+impl fmt::Debug for VerificationRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("VerificationRequest")
+            .field("client_assertion", &"[REDACTED]")
+            .field("op", &self.op)
+            .field("resource", &self.resource.as_ref().map(|_| "[REDACTED]"))
+            .field("service_did", &self.service_did)
+            .finish()
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -297,11 +344,22 @@ pub enum ResponseBody<T> {
     Problem(Box<ProblemDetails>),
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct PlatformResponse<T> {
     pub body: ResponseBody<T>,
     pub headers: HeaderMap,
     pub status: u16,
+}
+
+impl<T: fmt::Debug> fmt::Debug for PlatformResponse<T> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PlatformResponse")
+            .field("body", &self.body)
+            .field("headers", &"[REDACTED]")
+            .field("status", &self.status)
+            .finish()
+    }
 }
 
 impl<T: Serialize> PlatformResponse<T> {
@@ -313,13 +371,29 @@ impl<T: Serialize> PlatformResponse<T> {
     }
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Default, Eq, PartialEq)]
 pub struct RequestContext {
     pub authorization: Option<String>,
     pub idempotency_key: Option<String>,
     pub now: Option<OffsetDateTime>,
     pub principal: String,
     pub request_id: Option<String>,
+}
+
+impl fmt::Debug for RequestContext {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RequestContext")
+            .field(
+                "authorization",
+                &self.authorization.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("idempotency_key", &self.idempotency_key)
+            .field("now", &self.now)
+            .field("principal", &self.principal)
+            .field("request_id", &self.request_id)
+            .finish()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -487,13 +561,26 @@ pub struct IdempotencyInput {
     pub request_hash: String,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct StoredResponse {
     pub body: Vec<u8>,
     pub content_type: String,
     pub created_at: OffsetDateTime,
     pub headers: HeaderMap,
     pub status: u16,
+}
+
+impl fmt::Debug for StoredResponse {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("StoredResponse")
+            .field("body", &"[REDACTED]")
+            .field("content_type", &self.content_type)
+            .field("created_at", &self.created_at)
+            .field("headers", &"[REDACTED]")
+            .field("status", &self.status)
+            .finish()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
