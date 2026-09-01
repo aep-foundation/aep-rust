@@ -23,6 +23,8 @@ package:
 	cargo package -p aep-platform --allow-dirty --locked --list
 	cargo package -p aep-agent --allow-dirty --locked --list
 	cargo package -p aep-service --allow-dirty --locked --list
+	cargo package -p aep-tower --allow-dirty --locked --list
+	cargo package -p aep-axum --allow-dirty --locked --list
 
 test:
 	cargo test --workspace --all-features --locked

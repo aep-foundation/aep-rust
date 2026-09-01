@@ -16,10 +16,13 @@ Service-issued credentials, and authenticated Agent access.
 | Inspect, enroll with, and authenticate to Services | `aep-agent`    |
 | Integrate enrollment into a Service                | `aep-service`  |
 | Host managed Agent identities                      | `aep-platform` |
+| Add reusable HTTP middleware to a Service          | `aep-tower`    |
+| Integrate a Service with Axum                      | `aep-axum`     |
 
-The four crates share one version. Core remains transport-independent. Service and Platform depend
+The crates share one version. Core remains transport-independent. Service and Platform depend
 toward Core, while Agent composes Core with an injected identity provider without creating a
-dependency on Platform or Service implementations.
+dependency on Platform or Service implementations. Tower and Axum are optional adapters;
+integrators can use either, both, or neither.
 
 Public asynchronous APIs do not expose a particular runtime. Default networking will use a
 Rustls-backed HTTP client while transports, clocks, and delays remain injectable at integration

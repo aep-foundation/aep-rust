@@ -1,9 +1,11 @@
 [workspace]
 members = [
   "crates/aep-agent",
+  "crates/aep-axum",
   "crates/aep-core",
   "crates/aep-platform",
   "crates/aep-service",
+  "crates/aep-tower",
 ]
 resolver = "3"
 
@@ -24,13 +26,19 @@ unsafe_code = "forbid"
 [workspace.dependencies]
 aep-core = { version = "0.1.0", path = "crates/aep-core" }
 aep-platform = { version = "0.1.0", path = "crates/aep-platform" }
+aep-service = { version = "0.1.0", path = "crates/aep-service" }
+aep-tower = { version = "0.1.0", path = "crates/aep-tower" }
 async-trait = "0.1.92"
+axum = { version = "0.8.9", default-features = false }
 base64 = "0.23.1"
+bytes = "1.12.1"
 chrono = { version = "0.4.42", default-features = false, features = ["std"] }
 ed25519-dalek = { version = "2.2.0", default-features = false, features = ["fast", "pem", "std", "zeroize"] }
 futures = "0.3.34"
 futures-timer = "3.0.4"
 http = "1.5.0"
+http-body = "1.1.0"
+http-body-util = "0.1.5"
 jwt-compact = { version = "0.8.0", default-features = false, features = ["ed25519-dalek", "p256", "std"] }
 p256 = { version = "0.13.2", default-features = false, features = ["ecdsa", "pem", "std"] }
 percent-encoding = "2.3.2"
@@ -45,5 +53,6 @@ subtle = "2.6.1"
 thiserror = "2.0.20"
 time = { version = "0.3.55", features = ["formatting", "parsing"] }
 tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread"] }
+tower = { version = "0.5.3", features = ["util"] }
 url = "2.5.8"
 uuid = { version = "1.26.0", features = ["v4"] }
