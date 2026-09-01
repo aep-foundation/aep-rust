@@ -6,6 +6,7 @@ members = [
   "crates/aep-platform",
   "crates/aep-service",
   "crates/aep-tower",
+  "examples",
 ]
 resolver = "3"
 
@@ -24,6 +25,8 @@ categories = ["api-bindings", "authentication", "web-programming"]
 unsafe_code = "forbid"
 
 [workspace.dependencies]
+aep-agent = { version = "0.1.0", path = "crates/aep-agent" }
+aep-axum = { version = "0.1.0", path = "crates/aep-axum" }
 aep-core = { version = "0.1.0", path = "crates/aep-core" }
 aep-platform = { version = "0.1.0", path = "crates/aep-platform" }
 aep-service = { version = "0.1.0", path = "crates/aep-service" }

@@ -38,6 +38,10 @@ authentication inserts `AuthenticatedPrincipal` into the request extensions. The
 origin is used to construct the absolute protected-resource URL bound into JWT client assertions.
 Plaintext HTTP is rejected unless explicitly enabled for a loopback origin.
 
+The [`aep-local-lifecycle`](../../examples/aep-local-lifecycle/) example uses `CommandService`
+directly. The [`aep-service-axum`](../../examples/aep-service-axum/) example shows the same Tower
+boundaries composed through Axum.
+
 The underlying `aep-service` crate remains usable without Tower. See the
 [workspace guide](../../README.md) and the
 [AEP specifications](https://github.com/aep-foundation/aep-specs).

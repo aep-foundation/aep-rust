@@ -10,23 +10,64 @@ Service-issued credentials, and authenticated Agent access.
 
 ## Workspace
 
-| Goal                                               | Crate          |
-| -------------------------------------------------- | -------------- |
-| Use protocol models, validation, and cryptography  | `aep-core`     |
-| Inspect, enroll with, and authenticate to Services | `aep-agent`    |
-| Integrate enrollment into a Service                | `aep-service`  |
-| Host managed Agent identities                      | `aep-platform` |
-| Add reusable HTTP middleware to a Service          | `aep-tower`    |
-| Integrate a Service with Axum                      | `aep-axum`     |
+| Goal                                               | Crate          | Guide                                      |
+| -------------------------------------------------- | -------------- | ------------------------------------------ |
+| Use protocol models, validation, and cryptography  | `aep-core`     | [Core](./crates/aep-core)                  |
+| Inspect, enroll with, and authenticate to Services | `aep-agent`    | [Agent](./crates/aep-agent)                |
+| Integrate enrollment into a Service                | `aep-service`  | [Service](./crates/aep-service)            |
+| Host managed Agent identities                      | `aep-platform` | [Platform](./crates/aep-platform)          |
+| Add reusable HTTP middleware to a Service          | `aep-tower`    | [Tower adapter](./crates/aep-tower)        |
+| Integrate a Service with Axum                      | `aep-axum`     | [Axum adapter](./crates/aep-axum)          |
 
 The crates share one version. Core remains transport-independent. Service and Platform depend
 toward Core, while Agent composes Core with an injected identity provider without creating a
 dependency on Platform or Service implementations. Tower and Axum are optional adapters;
 integrators can use either, both, or neither.
 
-Public asynchronous APIs do not expose a particular runtime. Default networking will use a
+Public asynchronous APIs do not expose a particular runtime. Default networking uses a
 Rustls-backed HTTP client while transports, clocks, and delays remain injectable at integration
 boundaries.
+
+## Installation
+
+An Agent normally needs only:
+
+```toml
+[dependencies]
+aep-agent = "0.1"
+```
+
+A framework-neutral Service uses `aep-service`. Add `aep-tower` for reusable HTTP middleware or
+`aep-axum` for direct Axum integration:
+
+```toml
+[dependencies]
+aep-axum = "0.1"
+aep-service = "0.1"
+```
+
+A hosted identity provider uses `aep-platform`. Add `aep-core` explicitly only when the application
+names its protocol models or cryptographic types directly. All crates share one version.
+
+## Integration paths
+
+Agents provide an `IdentityProvider`, create a `Client`, inspect each Service, enroll, and optionally
+request a Service credential. Services create a framework-neutral `Service`, configure Claims and
+Grant Types, and connect its command and protected-resource boundaries to HTTP. Platforms provide
+authorization, identity, key, and Service-DID resolution boundaries before exposing hosted identity
+operations through their chosen HTTP stack.
+
+Runnable examples cover a complete local Agent and Service lifecycle, an Axum Service, and an
+ephemeral Platform:
+
+```sh
+cargo run -p aep-examples --bin aep-local-lifecycle
+cargo run -p aep-examples --bin aep-service-axum
+cargo run -p aep-examples --bin aep-platform-ephemeral
+```
+
+See the [examples guide](./examples/) for what each process demonstrates and which shortcuts are
+appropriate only for development.
 
 ## Development
 

@@ -6,6 +6,13 @@ for the Agent Enrollment Protocol.
 Use this crate when operating an AEP Platform that holds Agent signing keys. Agent applications that
 consume a Platform use `aep-agent` and provide its `IdentityProvider` boundary instead.
 
+## Install
+
+```toml
+[dependencies]
+aep-platform = "0.1"
+```
+
 ## Responsibilities
 
 `Platform` implements the transport-independent behavior behind:
@@ -28,6 +35,10 @@ behind `KeyStore`; this crate never exports private keys.
 
 Framework integration and runnable Platform examples are developed separately from the protocol
 engine so that the public API remains independent of Axum, Tower, Tokio, and application storage.
+
+The [`aep-platform-ephemeral`](../../examples/aep-platform-ephemeral/) example supplies each
+required boundary, provisions an identity, renders its DID document, and signs an assertion. Its
+in-memory stores and fixed example authorization policy are not production defaults.
 
 See the [workspace guide](../../README.md) and the
 [AEP specifications](https://github.com/aep-foundation/aep-specs).

@@ -28,8 +28,12 @@ make coverage
 ## Package boundaries
 
 `aep-core` owns transport-independent protocol behavior. `aep-agent`, `aep-service`, and
-`aep-platform` are role crates. Agent may compose Platform for hosted identity workflows; Service
-does not depend on Agent behavior. All crate versions advance together.
+`aep-platform` are role crates. `aep-tower` and `aep-axum` are optional Service adapters; the role
+crates do not depend on either. Agent may compose Platform for hosted identity workflows; Service
+does not depend on Agent behavior. All publishable crate versions advance together.
+
+The non-publishable `aep-examples` package must compile under the same workspace gates. Run a
+specific walkthrough with `cargo run -p aep-examples --bin <name>`.
 
 The normative protocol is maintained in `aep-foundation/aep-specs`. Confirm draft, schema,
 registry, and conformance behavior there before implementing or changing wire behavior.
