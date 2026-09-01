@@ -15,7 +15,21 @@ readme = "README.md"
 
 [dependencies]
 aep-core.workspace = true
-aep-platform.workspace = true
+async-trait.workspace = true
+base64.workspace = true
+futures.workspace = true
+futures-timer.workspace = true
+http.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+time.workspace = true
+url.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
 
 [lints]
 workspace = true
