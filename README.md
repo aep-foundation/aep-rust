@@ -110,6 +110,14 @@ registries, examples, and test vectors.
 
 See [SECURITY.md](./SECURITY.md) for vulnerability reporting.
 
+## Releases
+
+All six crates use one workspace version. Maintainers run the `Release` workflow from `main`; it
+verifies the workspace, clean consumption, shared conformance, and Node.js interoperability before
+publishing crates in dependency order. Crates.io Trusted Publishing supplies a temporary workflow
+credential, and the resulting archives receive GitHub build-provenance attestations before the
+workflow creates the matching tag and GitHub release.
+
 ## License
 
 MIT.

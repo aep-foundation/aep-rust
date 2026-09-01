@@ -93,3 +93,9 @@ jobs:
         run: make verify
         env:
           RUSTUP_TOOLCHAIN: ${{ matrix.rust }}
+
+      - name: Verify clean consumer
+        if: matrix.rust == '1.88.0'
+        run: make consumer-smoke
+        env:
+          RUSTUP_TOOLCHAIN: ${{ matrix.rust }}

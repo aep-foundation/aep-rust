@@ -1,7 +1,10 @@
-.PHONY: conformance coverage dependency docs format format-check interoperability lint package test verify
+.PHONY: conformance consumer-smoke coverage dependency docs format format-check interoperability lint package test verify
 
 conformance:
 	./scripts/run-conformance.sh
+
+consumer-smoke:
+	./scripts/verify-consumer.sh
 
 coverage:
 	cargo llvm-cov --workspace --all-features --locked --exclude aep-conformance --lcov --output-path lcov.info
