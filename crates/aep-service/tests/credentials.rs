@@ -291,7 +291,7 @@ fn rejects_reassigned_credential_identifiers_and_wrong_api_key_carriers() {
             now: now(),
         };
         assert!(
-            store
+            !store
                 .has_presentation(&GrantType::ApiKey, &input)
                 .await
                 .expect("presentation")
@@ -299,6 +299,24 @@ fn rejects_reassigned_credential_identifiers_and_wrong_api_key_carriers() {
         assert!(
             store
                 .authenticate(&GrantType::ApiKey, &input)
+                .await
+                .expect("authentication")
+                .is_none()
+        );
+
+        let invalid = CredentialAuthenticationInput {
+            headers: headers("X-API-Key", "invalid-secret"),
+            now: now(),
+        };
+        assert!(
+            store
+                .has_presentation(&GrantType::ApiKey, &invalid)
+                .await
+                .expect("presentation")
+        );
+        assert!(
+            store
+                .authenticate(&GrantType::ApiKey, &invalid)
                 .await
                 .expect("authentication")
                 .is_none()
