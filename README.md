@@ -46,8 +46,10 @@ aep-axum = "0.1"
 aep-service = "0.1"
 ```
 
-A hosted identity provider uses `aep-platform`. Add `aep-core` explicitly only when the application
-names its protocol models or cryptographic types directly. All crates share one version.
+An Agent that delegates identity custody to a remote Platform uses the `PlatformIdentityProvider`
+included in `aep-agent`. An application that operates the Platform uses `aep-platform`. Add
+`aep-core` explicitly only when the application names its protocol models or cryptographic types
+directly. All crates share one version.
 
 ## Integration paths
 

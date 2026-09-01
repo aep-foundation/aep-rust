@@ -1,6 +1,8 @@
 use aep_core::{AgentStatus, ClaimName, ProblemDetails};
 use thiserror::Error;
 
+use crate::PlatformPendingSign;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum InspectErrorCode {
     HttpError,
@@ -40,6 +42,13 @@ pub enum AgentError {
     EnrollmentState { status: AgentStatus },
     #[error("AEP Status polling timed out")]
     PollingTimeout,
+    #[error("AEP Platform signing is pending")]
+    PlatformSignPending { pending: Box<PlatformPendingSign> },
+    #[error("AEP Platform command failed with HTTP {status}")]
+    PlatformCommand {
+        status: u16,
+        problem: Option<Box<ProblemDetails>>,
+    },
     #[error("AEP Service does not advertise a compatible grant type")]
     NoCompatibleGrantType,
     #[error("AEP Service does not advertise a compatible protected-resource authentication method")]
