@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use std::{collections::BTreeMap, fmt, sync::Arc, time::Duration};
 
 use aep_core::{
     ClientAssertionClaims, DidWebDocumentUrlOptions, HttpRequest, HttpResponse, HttpTransport,
@@ -40,11 +40,22 @@ pub trait PlatformContextProvider: Send + Sync {
     ) -> Result<BTreeMap<String, Value>, AgentError>;
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct PlatformPendingSign {
     pub identity: AgentIdentity,
     pub platform_context: BTreeMap<String, Value>,
     pub retry_after: Duration,
+}
+
+impl fmt::Debug for PlatformPendingSign {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PlatformPendingSign")
+            .field("identity", &self.identity)
+            .field("platform_context", &"[REDACTED]")
+            .field("retry_after", &self.retry_after)
+            .finish()
+    }
 }
 
 #[async_trait]

@@ -707,4 +707,55 @@ mod tests {
         });
         assert!(validate_built_in_grant_response(&GrantType::ApiKey, &wrong).is_err());
     }
+
+    #[test]
+    fn redacts_credentials_from_debug_output() {
+        let credentials = [
+            parse_built_in_grant_response(
+                &GrantType::OAuthBearer,
+                br#"{"access_token":"oauth-secret","credential_id":"id","expires_at":"2027-01-01T00:00:00Z","token_type":"Bearer"}"#,
+            )
+            .expect("OAuth response"),
+            parse_built_in_grant_response(
+                &GrantType::ApiKey,
+                br#"{"api_key":"api-secret","credential_id":"id","expires_at":"2027-01-01T00:00:00Z","header":"X-API-Key"}"#,
+            )
+            .expect("API-key response"),
+            parse_built_in_grant_response(
+                &GrantType::Basic,
+                br#"{"credential_id":"id","expires_at":"2027-01-01T00:00:00Z","password":"basic-secret","username":"agent"}"#,
+            )
+            .expect("Basic response"),
+        ];
+        let authorization = crate::ProtectedResourceAuthorization {
+            carrier: crate::AuthorizationCarrier::Standard,
+            scheme: crate::CredentialScheme::Bearer,
+            credentials: "authorization-secret".to_owned(),
+        };
+        for output in credentials
+            .iter()
+            .map(|credential| format!("{credential:?}"))
+            .chain([format!("{authorization:?}")])
+        {
+            assert!(!output.contains("secret"));
+            assert!(output.contains("[REDACTED]"));
+        }
+
+        let claims = crate::ClaimValues {
+            contact_email: Some("claims-secret@example.com".to_owned()),
+            ..crate::ClaimValues::default()
+        };
+        let output = format!("{claims:?}");
+        assert!(!output.contains("claims-secret"));
+        assert!(output.contains("[REDACTED]"));
+
+        let address = crate::ContactAddressPrimary {
+            line1: "address-secret".to_owned(),
+            country: "US".to_owned(),
+            ..crate::ContactAddressPrimary::default()
+        };
+        let output = format!("{address:?}");
+        assert!(!output.contains("address-secret"));
+        assert!(output.contains("[REDACTED]"));
+    }
 }

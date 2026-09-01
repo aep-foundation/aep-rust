@@ -600,6 +600,54 @@ fn coalesces_concurrent_idempotent_operations() {
     });
 }
 
+#[test]
+fn redacts_service_credentials_from_debug_output() {
+    let response = ServiceResponse {
+        body: ResponseBody::Grant(json!({"api_key": "grant-secret"})),
+        headers: HeaderMap::from_iter([(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer header-secret"),
+        )]),
+        status: 200,
+    };
+    let options = IdempotentCommandOptions {
+        client_assertion: "assertion-secret".to_owned(),
+        idempotency_key: "request-1".to_owned(),
+    };
+    let request = ProtectedResourceRequest {
+        headers: response.headers.clone(),
+        method: http::Method::GET,
+        url: Url::parse("https://service.example/resource?token=url-secret").expect("URL"),
+    };
+    let assertion = ClientAssertionVerificationContext {
+        assertion: "assertion-context-secret".to_owned(),
+        current_time: fixed_time(),
+        idempotency_key: Some("request-1".to_owned()),
+        operation: AssertionOperation::Authenticate,
+        resource: Some(request.url.clone()),
+        service_did: service_did().to_owned(),
+        signing_algorithms: vec![SigningAlgorithm::EdDsa],
+    };
+    let authentication = CredentialAuthenticationInput {
+        headers: response.headers.clone(),
+        now: fixed_time(),
+    };
+    let authenticated_options = AuthenticatedCommandOptions {
+        client_assertion: "authenticated-secret".to_owned(),
+    };
+    for output in [
+        format!("{response:?}"),
+        format!("{options:?}"),
+        format!("{request:?}"),
+        format!("{assertion:?}"),
+        format!("{authentication:?}"),
+        format!("{authenticated_options:?}"),
+    ] {
+        assert!(!output.contains("secret"));
+        assert!(output.contains("[REDACTED]"));
+    }
+}
+
 async fn enroll(test: &TestService, assertion: &str, key: &str) {
     let response = test
         .service

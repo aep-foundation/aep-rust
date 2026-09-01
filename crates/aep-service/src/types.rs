@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use std::{collections::BTreeMap, fmt, sync::Arc, time::Duration};
 
 use aep_core::{
     AgentStatus, ApiKeyGrantResponse, AssertionOperation, AuthenticationMethod, BasicGrantResponse,
@@ -14,13 +14,25 @@ use url::Url;
 
 use crate::ServiceError;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub enum ResponseBody {
     Enroll(aep_core::EnrollResponse),
     Grant(Value),
     Problem(ProblemDetails),
     Revoke(aep_core::RevokeResponse),
     Status(aep_core::StatusResponse),
+}
+
+impl fmt::Debug for ResponseBody {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Enroll(value) => formatter.debug_tuple("Enroll").field(value).finish(),
+            Self::Grant(_) => formatter.debug_tuple("Grant").field(&"[REDACTED]").finish(),
+            Self::Problem(value) => formatter.debug_tuple("Problem").field(value).finish(),
+            Self::Revoke(value) => formatter.debug_tuple("Revoke").field(value).finish(),
+            Self::Status(value) => formatter.debug_tuple("Status").field(value).finish(),
+        }
+    }
 }
 
 impl ResponseBody {
@@ -44,11 +56,22 @@ impl ResponseBody {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct ServiceResponse {
     pub body: ResponseBody,
     pub headers: HeaderMap,
     pub status: u16,
+}
+
+impl fmt::Debug for ServiceResponse {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ServiceResponse")
+            .field("body", &self.body)
+            .field("headers", &"[REDACTED]")
+            .field("status", &self.status)
+            .finish()
+    }
 }
 
 impl ServiceResponse {
@@ -163,7 +186,7 @@ pub trait ClientAssertionReplayStore: Send + Sync {
     ) -> Result<bool, ServiceError>;
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct ClientAssertionVerificationContext {
     pub assertion: String,
     pub current_time: OffsetDateTime,
@@ -172,6 +195,21 @@ pub struct ClientAssertionVerificationContext {
     pub resource: Option<Url>,
     pub service_did: String,
     pub signing_algorithms: Vec<SigningAlgorithm>,
+}
+
+impl fmt::Debug for ClientAssertionVerificationContext {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ClientAssertionVerificationContext")
+            .field("assertion", &"[REDACTED]")
+            .field("current_time", &self.current_time)
+            .field("idempotency_key", &self.idempotency_key)
+            .field("operation", &self.operation)
+            .field("resource", &self.resource.as_ref().map(|_| "[REDACTED]"))
+            .field("service_did", &self.service_did)
+            .field("signing_algorithms", &self.signing_algorithms)
+            .finish()
+    }
 }
 
 #[async_trait]
@@ -204,10 +242,20 @@ pub struct GrantContext {
     pub now: OffsetDateTime,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct CredentialAuthenticationInput {
     pub headers: HeaderMap,
     pub now: OffsetDateTime,
+}
+
+impl fmt::Debug for CredentialAuthenticationInput {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CredentialAuthenticationInput")
+            .field("headers", &"[REDACTED]")
+            .field("now", &self.now)
+            .finish()
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -390,22 +438,52 @@ impl ServiceOptions {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct AuthenticatedCommandOptions {
     pub client_assertion: String,
 }
 
-#[derive(Clone, Debug)]
+impl fmt::Debug for AuthenticatedCommandOptions {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AuthenticatedCommandOptions")
+            .field("client_assertion", &"[REDACTED]")
+            .finish()
+    }
+}
+
+#[derive(Clone)]
 pub struct IdempotentCommandOptions {
     pub client_assertion: String,
     pub idempotency_key: String,
 }
 
-#[derive(Clone, Debug)]
+impl fmt::Debug for IdempotentCommandOptions {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("IdempotentCommandOptions")
+            .field("client_assertion", &"[REDACTED]")
+            .field("idempotency_key", &self.idempotency_key)
+            .finish()
+    }
+}
+
+#[derive(Clone)]
 pub struct ProtectedResourceRequest {
     pub headers: HeaderMap,
     pub method: http::Method,
     pub url: Url,
+}
+
+impl fmt::Debug for ProtectedResourceRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProtectedResourceRequest")
+            .field("headers", &"[REDACTED]")
+            .field("method", &self.method)
+            .field("url", &"[REDACTED]")
+            .finish()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]

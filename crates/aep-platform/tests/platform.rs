@@ -700,6 +700,69 @@ fn expires_idempotency_records_against_the_configured_clock() {
     });
 }
 
+#[test]
+fn redacts_platform_credentials_from_debug_output() {
+    let request = VerificationRequest {
+        client_assertion: "assertion-secret".to_owned(),
+        op: AssertionOperation::Authenticate,
+        resource: Some("https://service.example/resource?token=url-secret".to_owned()),
+        service_did: "did:web:service.example".to_owned(),
+    };
+    let context = RequestContext {
+        authorization: Some("Bearer authorization-secret".to_owned()),
+        idempotency_key: Some("request-1".to_owned()),
+        now: Some(fixed_time()),
+        principal: "principal".to_owned(),
+        request_id: None,
+    };
+    let stored = StoredResponse {
+        body: b"body-secret".to_vec(),
+        content_type: aep_core::MEDIA_TYPE.to_owned(),
+        created_at: fixed_time(),
+        headers: HeaderMap::from_iter([(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer header-secret"),
+        )]),
+        status: 200,
+    };
+    let sign_request = SignRequest {
+        jti: "request-1".to_owned(),
+        lifetime_seconds: Some("300".to_owned()),
+        op: AssertionOperation::Authenticate,
+        platform_context: BTreeMap::from([("credential".to_owned(), json!("context-secret"))]),
+        resource: Some("https://service.example/resource?token=request-secret".to_owned()),
+        service_did: "did:web:service.example".to_owned(),
+    };
+    let sign_response = SignResponse {
+        additional: BTreeMap::from([("credential".to_owned(), json!("additional-secret"))]),
+        agent_did: Some("did:web:agent.example".to_owned()),
+        client_assertion: Some("response-secret".to_owned()),
+        expires_at: Some("2".to_owned()),
+        issued_at: Some("1".to_owned()),
+        jti: Some("request-1".to_owned()),
+        platform_context: sign_request.platform_context.clone(),
+        retry_after_seconds: None,
+        service_did: Some("did:web:service.example".to_owned()),
+        status: SignStatus::Completed,
+    };
+    let response = PlatformResponse {
+        body: ResponseBody::Success(sign_response.clone()),
+        headers: stored.headers.clone(),
+        status: 200,
+    };
+    for output in [
+        format!("{request:?}"),
+        format!("{context:?}"),
+        format!("{stored:?}"),
+        format!("{sign_request:?}"),
+        format!("{sign_response:?}"),
+        format!("{response:?}"),
+    ] {
+        assert!(!output.contains("secret"));
+        assert!(output.contains("[REDACTED]"));
+    }
+}
+
 async fn provision(platform: &Arc<Platform>, service_did: &str, key: &str) -> AgentIdentity {
     success_body(
         platform
