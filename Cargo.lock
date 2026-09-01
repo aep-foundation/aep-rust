@@ -56,6 +56,18 @@ name = "aep-service"
 version = "0.1.0"
 dependencies = [
  "aep-core",
+ "async-trait",
+ "base64 0.23.1",
+ "ed25519-dalek",
+ "futures",
+ "http",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
+ "time",
+ "url",
 ]
 
 [[package]]

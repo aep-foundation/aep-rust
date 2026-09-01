@@ -225,7 +225,7 @@ fn executes_agent_lifecycle_and_uses_then_revokes_credential() {
                 .expect("enroll")
                 .body
                 .status,
-            EnrollmentStatus::Active
+            AgentStatus::Active
         );
 
         let grant = session

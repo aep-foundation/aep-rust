@@ -141,11 +141,13 @@ extensible_string_enum!(ErrorCode {
     InsufficientScope => "insufficient_scope",
 });
 
-closed_string_enum!(EnrollmentStatus {
+closed_string_enum!(EnrollmentDecisionStatus {
     Active => "active",
     Pending => "pending",
     Rejected => "rejected",
 });
+
+pub type EnrollmentStatus = EnrollmentDecisionStatus;
 
 closed_string_enum!(AgentStatus {
     Active => "active",
@@ -423,7 +425,7 @@ fn owner_action_is_not_true(value: &Option<StringBoolean>) -> bool {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct EnrollResponse {
-    pub status: EnrollmentStatus,
+    pub status: AgentStatus,
     #[serde(
         default,
         deserialize_with = "deserialize_optional_non_null",
