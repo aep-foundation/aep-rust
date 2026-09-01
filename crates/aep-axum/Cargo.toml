@@ -1,0 +1,31 @@
+[package]
+name = "aep-axum"
+description = "Axum integration for Agent Enrollment Protocol Services."
+documentation = "https://docs.rs/aep-axum"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "README.md"
+
+[dependencies]
+aep-service.workspace = true
+aep-tower.workspace = true
+axum.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+aep-core.workspace = true
+async-trait.workspace = true
+serde_json.workspace = true
+time.workspace = true
+tokio.workspace = true
+tower.workspace = true
+
+[lints]
+workspace = true
