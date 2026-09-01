@@ -175,6 +175,7 @@ impl Service {
             &request,
         )?;
         let agent_did = claims.sub;
+        let now = self.clock.now();
         let result = self
             .idempotency_store
             .execute(
@@ -185,6 +186,7 @@ impl Service {
                             agent_did,
                             enrollment,
                             grant_type: request.grant_type.clone(),
+                            now,
                         };
                         let response = handler.grant(&request, &context).await?;
                         if !response.as_object().is_some_and(|response| {
@@ -257,6 +259,7 @@ impl Service {
             &request,
         )?;
         let agent_did = claims.sub;
+        let now = self.clock.now();
         let result = self
             .idempotency_store
             .execute(
@@ -268,6 +271,7 @@ impl Service {
                                 agent_did: agent_did.clone(),
                                 enrollment: enrollment.clone(),
                                 grant_type,
+                                now,
                             };
                             handler.revoke(&request, &context).await?;
                         }

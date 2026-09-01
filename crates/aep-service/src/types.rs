@@ -1,10 +1,10 @@
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use aep_core::{
-    AgentStatus, AssertionOperation, AuthenticationMethod, ClaimName, ClaimValues,
-    ClientAssertionClaims, EnrollRequest, EnrollmentDecisionStatus, ErrorCode, GrantRequest,
-    GrantType, GrantTypeConfig, IdentityMethod, InspectDocument, ProblemDetails, RevokeRequest,
-    SigningAlgorithm,
+    AgentStatus, ApiKeyGrantResponse, AssertionOperation, AuthenticationMethod, BasicGrantResponse,
+    BuiltInGrantResponse, ClaimName, ClaimValues, ClientAssertionClaims, EnrollRequest,
+    EnrollmentDecisionStatus, ErrorCode, GrantRequest, GrantType, GrantTypeConfig, IdentityMethod,
+    InspectDocument, OAuthBearerGrantResponse, ProblemDetails, RevokeRequest, SigningAlgorithm,
 };
 use async_trait::async_trait;
 use http::HeaderMap;
@@ -201,6 +201,7 @@ pub struct GrantContext {
     pub agent_did: String,
     pub enrollment: EnrollmentRecord,
     pub grant_type: GrantType,
+    pub now: OffsetDateTime,
 }
 
 #[derive(Clone, Debug)]
@@ -250,6 +251,73 @@ pub trait GrantTypeHandler: Send + Sync {
         Ok(false)
     }
 }
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ServiceCredentialRecord {
+    pub agent_did: String,
+    pub created_at: OffsetDateTime,
+    pub credential: BuiltInGrantResponse,
+    pub credential_id: String,
+    pub expires_at: OffsetDateTime,
+    pub grant_type: GrantType,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CredentialMatch {
+    pub agent_did: String,
+    pub credential_id: String,
+    pub expires_at: OffsetDateTime,
+    pub grant_type: GrantType,
+    pub scopes: Vec<String>,
+}
+
+#[async_trait]
+pub trait ServiceCredentialStore: Send + Sync {
+    async fn authenticate(
+        &self,
+        grant_type: &GrantType,
+        input: &CredentialAuthenticationInput,
+    ) -> Result<Option<CredentialMatch>, ServiceError>;
+    async fn has_presentation(
+        &self,
+        grant_type: &GrantType,
+        input: &CredentialAuthenticationInput,
+    ) -> Result<bool, ServiceError>;
+    async fn revoke_credential(
+        &self,
+        agent_did: &str,
+        grant_type: &GrantType,
+        credential_id: &str,
+        revoked_at: OffsetDateTime,
+    ) -> Result<(), ServiceError>;
+    async fn revoke_grant_type(
+        &self,
+        agent_did: &str,
+        grant_type: &GrantType,
+        revoked_at: OffsetDateTime,
+    ) -> Result<(), ServiceError>;
+    async fn save(&self, record: ServiceCredentialRecord) -> Result<(), ServiceError>;
+}
+
+pub type BuiltInCredentialIssuer<T> = Arc<
+    dyn Fn(
+            GrantRequest,
+            GrantContext,
+        ) -> futures::future::BoxFuture<'static, Result<T, ServiceError>>
+        + Send
+        + Sync,
+>;
+
+pub struct StoredCredentialGrantTypeOptions<T> {
+    pub config: GrantTypeConfig,
+    pub issue: BuiltInCredentialIssuer<T>,
+    pub store: Arc<dyn ServiceCredentialStore>,
+}
+
+pub type StoredOAuthBearerGrantTypeOptions =
+    StoredCredentialGrantTypeOptions<OAuthBearerGrantResponse>;
+pub type StoredApiKeyGrantTypeOptions = StoredCredentialGrantTypeOptions<ApiKeyGrantResponse>;
+pub type StoredBasicGrantTypeOptions = StoredCredentialGrantTypeOptions<BasicGrantResponse>;
 
 #[derive(Clone)]
 pub struct GrantTypeDefinition {
