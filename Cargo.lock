@@ -49,6 +49,17 @@ name = "aep-platform"
 version = "0.1.0"
 dependencies = [
  "aep-core",
+ "async-trait",
+ "futures",
+ "http",
+ "percent-encoding",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
+ "time",
+ "url",
+ "uuid",
 ]
 
 [[package]]
