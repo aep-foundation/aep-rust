@@ -1,1 +1,14 @@
-//! Service-side integration for the Agent Enrollment Protocol.
+#![doc = include_str!("../README.md")]
+
+mod authentication;
+mod error;
+mod service;
+mod store;
+mod transport;
+mod types;
+
+pub use error::*;
+pub use service::*;
+pub use store::*;
+pub use transport::*;
+pub use types::*;

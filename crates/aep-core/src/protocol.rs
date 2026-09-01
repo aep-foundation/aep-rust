@@ -604,6 +604,9 @@ mod tests {
             to_string(&enroll).expect("serialized response"),
             r#"{"status":"pending","verification_pending":["email"]}"#
         );
+        let existing = parse_enroll_response(br#"{"status":"suspended"}"#)
+            .expect("existing enrollment lifecycle response");
+        assert_eq!(existing.status, crate::AgentStatus::Suspended);
         parse_status_response(br#"{"status":"active","since":"2026-08-29T12:00:00Z"}"#)
             .expect("Status response");
         assert!(
