@@ -1,4 +1,4 @@
-.PHONY: conformance coverage dependency docs format format-check lint package test verify
+.PHONY: conformance coverage dependency docs format format-check interoperability lint package test verify
 
 conformance:
 	./scripts/run-conformance.sh
@@ -17,6 +17,9 @@ format:
 
 format-check:
 	cargo fmt --all --check
+
+interoperability:
+	./scripts/run-node-interoperability.sh
 
 lint:
 	cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
