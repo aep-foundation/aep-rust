@@ -12,6 +12,7 @@ dependencies = [
  "futures",
  "futures-timer",
  "http",
+ "percent-encoding",
  "reqwest",
  "serde",
  "serde_json",

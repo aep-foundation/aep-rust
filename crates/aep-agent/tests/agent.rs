@@ -68,6 +68,53 @@ struct TestIdentityProvider {
     signer: Arc<RecordingSigner>,
 }
 
+struct SequencePlatformKeys(Mutex<VecDeque<String>>);
+
+impl PlatformIdempotencyKeyProvider for SequencePlatformKeys {
+    fn create_key(&self) -> Result<String, AgentError> {
+        self.0
+            .lock()
+            .expect("key lock")
+            .pop_front()
+            .ok_or_else(|| AgentError::InvalidConfiguration("no test key".to_owned()))
+    }
+}
+
+struct CompletingPendingSign;
+
+#[async_trait]
+impl PlatformPendingSignResolver for CompletingPendingSign {
+    async fn resolve(
+        &self,
+        pending: PlatformPendingSign,
+    ) -> Result<BTreeMap<String, serde_json::Value>, AgentError> {
+        assert_eq!(pending.retry_after, std::time::Duration::from_secs(2));
+        assert_eq!(pending.platform_context["approval_id"], "approval-one");
+        Ok(BTreeMap::from([(
+            "approval_id".to_owned(),
+            serde_json::Value::String("approval-one".to_owned()),
+        )]))
+    }
+}
+
+struct TestPlatformHeaders;
+
+#[async_trait]
+impl PlatformAuthenticationHeaders for TestPlatformHeaders {
+    async fn headers(&self) -> Result<HeaderMap, AgentError> {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer dynamic"),
+        );
+        headers.insert(header::ACCEPT, HeaderValue::from_static("text/plain"));
+        headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("text/plain"));
+        headers.insert("idempotency-key", HeaderValue::from_static("not-allowed"));
+        headers.insert("x-platform-context", HeaderValue::from_static("context"));
+        Ok(headers)
+    }
+}
+
 #[async_trait]
 impl IdentityProvider for TestIdentityProvider {
     async fn get_or_create_identity(
@@ -184,6 +231,560 @@ fn client(transport: Arc<ScriptedTransport>, signer: Arc<RecordingSigner>) -> Ar
     options.command_transport = Some(transport.clone());
     options.inspect_transport = Some(transport);
     Client::new(options).expect("client")
+}
+
+fn platform_discovery() -> serde_json::Value {
+    serde_json::json!({
+        "aep_version": "1.0",
+        "endpoints": {
+            "lifecycle": "/v1/aep/agent-identities/{agent_identity_id}",
+            "list": "/v1/aep/agent-identities",
+            "provision": "/v1/aep/agent-identities",
+            "sign": "/v1/aep/agent-identities/{agent_identity_id}/sign"
+        },
+        "http": {"endpoint_base": "/v1/aep"},
+        "identity": {
+            "did_methods": ["did:web"],
+            "did_url_template": "https://platform.example/agents/{agent_did_id}/did.json"
+        },
+        "platform": {
+            "hosted_verification": false,
+            "name": "Example Platform"
+        },
+        "signing": {
+            "algorithms": ["ES256"],
+            "default_lifetime_seconds": "300"
+        }
+    })
+}
+
+fn platform_identity() -> serde_json::Value {
+    serde_json::json!({
+        "agent_did": "did:web:platform.example:agents:one",
+        "agent_identity_id": "identity/one",
+        "created_at": "2026-08-31T12:00:00Z",
+        "did_document_url": "https://platform.example/agents/one/did.json",
+        "key_id": "did:web:platform.example:agents:one",
+        "service_did": "did:web:service.example",
+        "signing_algorithms": ["ES256"],
+        "status": "active",
+        "updated_at": "2026-08-31T12:00:00Z"
+    })
+}
+
+fn inspection() -> Inspection {
+    Inspection {
+        cache_control: None,
+        document: parse_inspect_document(
+            &serde_json::to_vec(&inspect_document(serde_json::json!({
+                "methods": ["aep-jwt"]
+            })))
+            .expect("Inspect JSON"),
+        )
+        .expect("Inspect document"),
+        etag: None,
+        final_url: Url::parse("https://service.example/.well-known/aep").expect("final URL"),
+        inspect_url: Url::parse("https://service.example/.well-known/aep").expect("Inspect URL"),
+        last_modified: None,
+        service_url: Url::parse("https://service.example/").expect("Service URL"),
+    }
+}
+
+fn platform_provider(transport: Arc<ScriptedTransport>) -> Arc<PlatformIdentityProvider> {
+    let mut options = PlatformIdentityProviderOptions::new("https://platform.example");
+    options.authorization = Some("Bearer platform-token".to_owned());
+    options.clock = Some(Arc::new(FixedClock(
+        OffsetDateTime::parse("2026-08-31T12:00:00Z", &Rfc3339).expect("fixed time"),
+    )));
+    options.transport = Some(transport);
+    PlatformIdentityProvider::new(options).expect("Platform provider")
+}
+
+#[test]
+fn provisions_and_signs_with_a_hosted_platform_identity() {
+    block_on(async {
+        let transport = Arc::new(ScriptedTransport::default());
+        transport.push_json(StatusCode::OK, platform_discovery());
+        transport.push_json(
+            StatusCode::OK,
+            serde_json::json!({"count": "0", "data": [], "total": "0"}),
+        );
+        transport.push_json(StatusCode::CREATED, platform_identity());
+        transport.push_json(
+            StatusCode::OK,
+            serde_json::json!({
+                "agent_did": "did:web:platform.example:agents:one",
+                "client_assertion": "platform.assertion.value",
+                "expires_at": "2026-08-31T12:05:00Z",
+                "issued_at": "2026-08-31T12:00:00Z",
+                "jti": "assertion-one",
+                "service_did": "did:web:service.example",
+                "status": "completed"
+            }),
+        );
+        let provider = platform_provider(transport.clone());
+        let identity = provider
+            .get_or_create_identity(IdentityRequest {
+                inspection: inspection(),
+            })
+            .await
+            .expect("provision identity");
+        let signer = provider
+            .signer_for(&identity)
+            .await
+            .expect("Platform signer");
+        let assertion = signer
+            .sign(
+                &ClientAssertionClaims {
+                    aud: "did:web:service.example".to_owned(),
+                    exp: 1_788_177_900,
+                    iat: 1_788_177_600,
+                    iss: "did:web:platform.example:agents:one".to_owned(),
+                    jti: "assertion-one".to_owned(),
+                    op: AssertionOperation::Enroll,
+                    resource: None,
+                    sub: "did:web:platform.example:agents:one".to_owned(),
+                    additional: BTreeMap::new(),
+                },
+                &[SigningAlgorithm::Es256],
+            )
+            .await
+            .expect("delegated assertion");
+        assert_eq!(assertion, "platform.assertion.value");
+
+        let requests = transport.requests.lock().expect("requests lock");
+        assert_eq!(requests.len(), 4);
+        assert_eq!(requests[0].url.path(), "/.well-known/aep-platform");
+        assert_eq!(
+            requests[1].url.query(),
+            Some("descending=true&limit=100&service_did=did%3Aweb%3Aservice.example")
+        );
+        assert_eq!(requests[2].method, Method::POST);
+        assert_eq!(
+            requests[2].headers.get(header::AUTHORIZATION),
+            Some(&HeaderValue::from_static("Bearer platform-token"))
+        );
+        assert!(requests[2].headers.contains_key("idempotency-key"));
+        assert_eq!(
+            requests[3].url.path(),
+            "/v1/aep/agent-identities/identity%2Fone/sign"
+        );
+        let sign_body: serde_json::Value =
+            serde_json::from_slice(&requests[3].body).expect("Sign request");
+        assert!(sign_body.get("resource").is_none());
+    });
+}
+
+#[test]
+fn recovers_an_existing_identity_and_reuses_discovery_cache() {
+    block_on(async {
+        let transport = Arc::new(ScriptedTransport::default());
+        transport.push_json(StatusCode::OK, platform_discovery());
+        for _ in 0..2 {
+            transport.push_json(
+                StatusCode::OK,
+                serde_json::json!({
+                    "count": "1",
+                    "data": [platform_identity()],
+                    "total": "1"
+                }),
+            );
+        }
+        let provider = platform_provider(transport.clone());
+        for _ in 0..2 {
+            let identity = provider
+                .find_identity_by_service_did("did:web:service.example")
+                .await
+                .expect("identity lookup")
+                .expect("active identity");
+            assert_eq!(identity.agent_did, "did:web:platform.example:agents:one");
+        }
+        let requests = transport.requests.lock().expect("requests lock");
+        assert_eq!(requests.len(), 3);
+        assert_eq!(requests[0].url.path(), "/.well-known/aep-platform");
+    });
+}
+
+#[test]
+fn exposes_or_resolves_pending_platform_signing() {
+    block_on(async {
+        let transport = Arc::new(ScriptedTransport::default());
+        transport.push_json(StatusCode::OK, platform_discovery());
+        transport.push_json(
+            StatusCode::OK,
+            serde_json::json!({
+                "count": "1",
+                "data": [platform_identity()],
+                "total": "1"
+            }),
+        );
+        transport.push_json(
+            StatusCode::ACCEPTED,
+            serde_json::json!({
+                "platform_context": {"approval_id": "approval-one"},
+                "retry_after_seconds": "2",
+                "status": "pending"
+            }),
+        );
+        transport.push_json(
+            StatusCode::OK,
+            serde_json::json!({
+                "agent_did": "did:web:platform.example:agents:one",
+                "client_assertion": "platform.assertion.value",
+                "expires_at": "2026-08-31T12:05:00Z",
+                "issued_at": "2026-08-31T12:00:00Z",
+                "jti": "assertion-one",
+                "service_did": "did:web:service.example",
+                "status": "completed"
+            }),
+        );
+        let mut options = PlatformIdentityProviderOptions::new("https://platform.example");
+        options.clock = Some(Arc::new(FixedClock(
+            OffsetDateTime::parse("2026-08-31T12:00:00Z", &Rfc3339).expect("fixed time"),
+        )));
+        options.idempotency_keys = Some(Arc::new(SequencePlatformKeys(Mutex::new(
+            VecDeque::from(["sign-one".to_owned(), "sign-two".to_owned()]),
+        ))));
+        options.pending_sign_resolver = Some(Arc::new(CompletingPendingSign));
+        options.transport = Some(transport.clone());
+        let provider = PlatformIdentityProvider::new(options).expect("Platform provider");
+        let identity = provider
+            .find_identity_by_service_did("did:web:service.example")
+            .await
+            .expect("identity lookup")
+            .expect("active identity");
+        let signer = provider.signer_for(&identity).await.expect("signer");
+        let assertion = signer
+            .sign(&platform_claims(), &[SigningAlgorithm::Es256])
+            .await
+            .expect("resolved assertion");
+        assert_eq!(assertion, "platform.assertion.value");
+        let requests = transport.requests.lock().expect("requests lock");
+        assert_eq!(requests[2].headers["idempotency-key"], "sign-one");
+        assert_eq!(requests[3].headers["idempotency-key"], "sign-two");
+        let completion_body: serde_json::Value =
+            serde_json::from_slice(&requests[3].body).expect("completion request");
+        assert_eq!(
+            completion_body["platform_context"]["approval_id"],
+            "approval-one"
+        );
+    });
+}
+
+#[test]
+fn returns_typed_pending_signing_without_a_resolver() {
+    block_on(async {
+        let transport = Arc::new(ScriptedTransport::default());
+        transport.push_json(StatusCode::OK, platform_discovery());
+        transport.push_json(
+            StatusCode::OK,
+            serde_json::json!({
+                "count": "1",
+                "data": [platform_identity()],
+                "total": "1"
+            }),
+        );
+        transport.push_json(
+            StatusCode::ACCEPTED,
+            serde_json::json!({"retry_after_seconds": "5", "status": "pending"}),
+        );
+        let provider = platform_provider(transport);
+        let identity = provider
+            .find_identity_by_service_did("did:web:service.example")
+            .await
+            .expect("identity lookup")
+            .expect("active identity");
+        let error = provider
+            .signer_for(&identity)
+            .await
+            .expect("signer")
+            .sign(&platform_claims(), &[SigningAlgorithm::Es256])
+            .await
+            .expect_err("pending result");
+        let AgentError::PlatformSignPending { pending } = error else {
+            panic!("expected typed pending error");
+        };
+        assert_eq!(pending.retry_after, std::time::Duration::from_secs(5));
+    });
+}
+
+#[test]
+fn conditionally_revalidates_platform_discovery() {
+    block_on(async {
+        let transport = Arc::new(ScriptedTransport::default());
+        let mut discovery_headers = HeaderMap::new();
+        discovery_headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(MEDIA_TYPE));
+        discovery_headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+        discovery_headers.insert(header::ETAG, HeaderValue::from_static("\"platform-one\""));
+        transport.push(Response {
+            status: StatusCode::OK,
+            headers: discovery_headers,
+            body: serde_json::to_vec(&platform_discovery()).expect("Discovery JSON"),
+            final_url: None,
+        });
+        transport.push_json(
+            StatusCode::OK,
+            serde_json::json!({"count": "0", "data": [], "total": "0"}),
+        );
+        transport.push(Response {
+            status: StatusCode::NOT_MODIFIED,
+            headers: HeaderMap::new(),
+            body: Vec::new(),
+            final_url: None,
+        });
+        transport.push_json(
+            StatusCode::OK,
+            serde_json::json!({"count": "0", "data": [], "total": "0"}),
+        );
+        let provider = platform_provider(transport.clone());
+        for _ in 0..2 {
+            assert!(
+                provider
+                    .find_identity_by_service_did("did:web:service.example")
+                    .await
+                    .expect("identity lookup")
+                    .is_none()
+            );
+        }
+        let requests = transport.requests.lock().expect("requests lock");
+        assert_eq!(requests.len(), 4);
+        assert_eq!(
+            requests[2].headers.get(header::IF_NONE_MATCH),
+            Some(&HeaderValue::from_static("\"platform-one\""))
+        );
+    });
+}
+
+#[test]
+fn rejects_unsafe_platform_discovery_and_command_failures() {
+    block_on(async {
+        let redirect_transport = Arc::new(ScriptedTransport::default());
+        let mut redirect_headers = HeaderMap::new();
+        redirect_headers.insert(
+            header::LOCATION,
+            HeaderValue::from_static("https://other.example/.well-known/aep-platform"),
+        );
+        redirect_transport.push(Response {
+            status: StatusCode::FOUND,
+            headers: redirect_headers,
+            body: Vec::new(),
+            final_url: None,
+        });
+        let error = platform_provider(redirect_transport)
+            .find_identity_by_service_did("did:web:service.example")
+            .await
+            .expect_err("cross-origin redirect");
+        assert!(error.to_string().contains("changed origin"));
+
+        let command_transport = Arc::new(ScriptedTransport::default());
+        command_transport.push_json(StatusCode::OK, platform_discovery());
+        let mut problem_headers = HeaderMap::new();
+        problem_headers.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static(PROBLEM_MEDIA_TYPE),
+        );
+        command_transport.push(Response {
+            status: StatusCode::FORBIDDEN,
+            headers: problem_headers,
+            body: serde_json::to_vec(&serde_json::json!({
+                "code": "authentication_required",
+                "detail": "Authenticate to the Platform.",
+                "status": 403,
+                "title": "Authentication required",
+                "type": "urn:aep:error:authentication_required"
+            }))
+            .expect("Problem JSON"),
+            final_url: None,
+        });
+        let error = platform_provider(command_transport)
+            .find_identity_by_service_did("did:web:service.example")
+            .await
+            .expect_err("command failure");
+        let AgentError::PlatformCommand { status, problem } = error else {
+            panic!("expected Platform command error");
+        };
+        assert_eq!(status, 403);
+        assert_eq!(
+            problem.expect("Problem Details").code,
+            ErrorCode::AuthenticationRequired
+        );
+    });
+}
+
+#[test]
+fn validates_platform_provider_configuration() {
+    let mut options = PlatformIdentityProviderOptions::new("http://platform.example");
+    assert!(PlatformIdentityProvider::new(options.clone()).is_err());
+    options.platform_url = "https://platform.example".to_owned();
+    options.maximum_response_bytes = 0;
+    assert!(PlatformIdentityProvider::new(options.clone()).is_err());
+    options.maximum_response_bytes = 1024;
+    options.request_timeout = std::time::Duration::ZERO;
+    assert!(PlatformIdentityProvider::new(options.clone()).is_err());
+    options.request_timeout = std::time::Duration::from_secs(1);
+    options.authorization = Some("bad\nvalue".to_owned());
+    assert!(PlatformIdentityProvider::new(options).is_err());
+}
+
+#[test]
+fn applies_dynamic_platform_headers_and_rejects_invalid_signer_inputs() {
+    block_on(async {
+        let transport = Arc::new(ScriptedTransport::default());
+        transport.push_json(StatusCode::OK, platform_discovery());
+        transport.push_json(
+            StatusCode::OK,
+            serde_json::json!({
+                "count": "1",
+                "data": [platform_identity()],
+                "total": "1"
+            }),
+        );
+        let mut options = PlatformIdentityProviderOptions::new("https://platform.example");
+        options.authentication_headers = Some(Arc::new(TestPlatformHeaders));
+        options.authorization = Some("Bearer static".to_owned());
+        options.transport = Some(transport.clone());
+        let provider = PlatformIdentityProvider::new(options).expect("Platform provider");
+        let identity = provider
+            .find_identity_by_service_did("did:web:service.example")
+            .await
+            .expect("identity lookup")
+            .expect("identity");
+        let signer = provider.signer_for(&identity).await.expect("signer");
+        let mut claims = platform_claims();
+        claims.aud = "did:web:other.example".to_owned();
+        assert!(
+            signer
+                .sign(&claims, &[SigningAlgorithm::Es256])
+                .await
+                .is_err()
+        );
+        assert!(
+            signer
+                .sign(&platform_claims(), &[SigningAlgorithm::EdDsa])
+                .await
+                .is_err()
+        );
+
+        let requests = transport.requests.lock().expect("requests lock");
+        let headers = &requests[1].headers;
+        assert_eq!(headers[header::AUTHORIZATION], "Bearer dynamic");
+        assert_eq!(headers[header::ACCEPT], MEDIA_TYPE);
+        assert_eq!(headers["x-platform-context"], "context");
+        assert!(!headers.contains_key("idempotency-key"));
+    });
+}
+
+#[test]
+fn rejects_oversized_platform_responses_and_empty_idempotency_keys() {
+    block_on(async {
+        let oversized = Arc::new(ScriptedTransport::default());
+        oversized.push_json(StatusCode::OK, platform_discovery());
+        let mut options = PlatformIdentityProviderOptions::new("https://platform.example");
+        options.maximum_response_bytes = 16;
+        options.transport = Some(oversized);
+        let error = PlatformIdentityProvider::new(options)
+            .expect("Platform provider")
+            .find_identity_by_service_did("did:web:service.example")
+            .await
+            .expect_err("oversized discovery");
+        assert!(error.to_string().contains("configured limit"));
+
+        let transport = Arc::new(ScriptedTransport::default());
+        transport.push_json(StatusCode::OK, platform_discovery());
+        transport.push_json(
+            StatusCode::OK,
+            serde_json::json!({"count": "0", "data": [], "total": "0"}),
+        );
+        let mut options = PlatformIdentityProviderOptions::new("https://platform.example");
+        options.idempotency_keys = Some(Arc::new(SequencePlatformKeys(Mutex::new(
+            VecDeque::from([" ".to_owned()]),
+        ))));
+        options.transport = Some(transport);
+        let error = PlatformIdentityProvider::new(options)
+            .expect("Platform provider")
+            .get_or_create_identity(IdentityRequest {
+                inspection: inspection(),
+            })
+            .await
+            .expect_err("empty idempotency key");
+        assert!(error.to_string().contains("empty key"));
+    });
+}
+
+#[test]
+fn rejects_malformed_platform_http_results() {
+    block_on(async {
+        let invalid_media = Arc::new(ScriptedTransport::default());
+        invalid_media.push_json(StatusCode::OK, platform_discovery());
+        invalid_media.push(Response {
+            status: StatusCode::OK,
+            headers: HeaderMap::new(),
+            body: b"{}".to_vec(),
+            final_url: None,
+        });
+        assert!(
+            platform_provider(invalid_media)
+                .find_identity_by_service_did("did:web:service.example")
+                .await
+                .expect_err("invalid media type")
+                .to_string()
+                .contains("media type")
+        );
+
+        let followed_redirect = Arc::new(ScriptedTransport::default());
+        followed_redirect.push_json(StatusCode::OK, platform_discovery());
+        followed_redirect.push(Response {
+            status: StatusCode::OK,
+            headers: HeaderMap::new(),
+            body: b"{}".to_vec(),
+            final_url: Some(Url::parse("https://platform.example/other").expect("URL")),
+        });
+        assert!(
+            platform_provider(followed_redirect)
+                .find_identity_by_service_did("did:web:service.example")
+                .await
+                .expect_err("followed redirect")
+                .to_string()
+                .contains("redirects are not allowed")
+        );
+
+        let invalid_key = Arc::new(ScriptedTransport::default());
+        invalid_key.push_json(StatusCode::OK, platform_discovery());
+        invalid_key.push_json(
+            StatusCode::OK,
+            serde_json::json!({"count": "0", "data": [], "total": "0"}),
+        );
+        let mut options = PlatformIdentityProviderOptions::new("https://platform.example");
+        options.idempotency_keys = Some(Arc::new(SequencePlatformKeys(Mutex::new(
+            VecDeque::from(["invalid\nkey".to_owned()]),
+        ))));
+        options.transport = Some(invalid_key);
+        assert!(
+            PlatformIdentityProvider::new(options)
+                .expect("Platform provider")
+                .get_or_create_identity(IdentityRequest {
+                    inspection: inspection(),
+                })
+                .await
+                .expect_err("invalid HTTP field")
+                .to_string()
+                .contains("HTTP field value")
+        );
+    });
+}
+
+fn platform_claims() -> ClientAssertionClaims {
+    ClientAssertionClaims {
+        aud: "did:web:service.example".to_owned(),
+        exp: 1_788_177_900,
+        iat: 1_788_177_600,
+        iss: "did:web:platform.example:agents:one".to_owned(),
+        jti: "assertion-one".to_owned(),
+        op: AssertionOperation::Enroll,
+        resource: None,
+        sub: "did:web:platform.example:agents:one".to_owned(),
+        additional: BTreeMap::new(),
+    }
 }
 
 #[test]
