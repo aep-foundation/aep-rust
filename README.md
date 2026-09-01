@@ -93,6 +93,15 @@ make conformance
 
 The harness writes machine-readable reports to `.conformance/reports/`.
 
+Run the bidirectional Rust and Node.js Agent, Service, and Platform interoperability flow with an
+adjacent `aep-node` checkout:
+
+```sh
+make interoperability
+```
+
+The workflow writes machine-readable evidence to `.interop/reports/`.
+
 See [DEVELOPMENT.md](./DEVELOPMENT.md) for the contributor workflow and
 [`aep-specs`](https://github.com/aep-foundation/aep-specs) for the normative drafts, schemas,
 registries, examples, and test vectors.
