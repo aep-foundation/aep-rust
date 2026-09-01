@@ -18,8 +18,8 @@ Service-issued credentials, and authenticated Agent access.
 | Host managed Agent identities                      | `aep-platform` |
 
 The four crates share one version. Core remains transport-independent. Service and Platform depend
-toward Core, while Agent composes Core and Platform without creating a dependency on Service
-behavior.
+toward Core, while Agent composes Core with an injected identity provider without creating a
+dependency on Platform or Service implementations.
 
 Public asynchronous APIs do not expose a particular runtime. Default networking will use a
 Rustls-backed HTTP client while transports, clocks, and delays remain injectable at integration
