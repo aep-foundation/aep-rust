@@ -6,6 +6,7 @@ members = [
   "crates/aep-platform",
   "crates/aep-service",
   "crates/aep-tower",
+  "conformance",
   "examples",
 ]
 resolver = "3"

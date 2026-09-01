@@ -25,6 +25,18 @@ LLVM instrumentation:
 make coverage
 ```
 
+## Conformance
+
+Run the shared AEP conformance harness against the public Rust role APIs with:
+
+```sh
+make conformance
+```
+
+The command uses `../aep-specs` by default. Set `AEP_SPECS_DIR` to another checkout when needed.
+Agent, Service, and Platform reports are written to `.conformance/reports/`. The conformance
+adapter is development tooling and is excluded from published crates and library coverage.
+
 ## Package boundaries
 
 `aep-core` owns transport-independent protocol behavior. `aep-agent`, `aep-service`, and

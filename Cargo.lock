@@ -39,6 +39,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "aep-conformance"
+version = "0.1.0"
+dependencies = [
+ "aep-agent",
+ "aep-core",
+ "aep-platform",
+ "aep-service",
+ "async-trait",
+ "base64 0.23.1",
+ "http",
+ "p256",
+ "serde",
+ "serde_json",
+ "time",
+ "tokio",
+ "url",
+]
+
+[[package]]
 name = "aep-core"
 version = "0.1.0"
 dependencies = [
