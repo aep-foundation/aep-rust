@@ -323,25 +323,7 @@ impl ServiceCredentialStore for MemoryServiceCredentialStore {
         input: &CredentialAuthenticationInput,
     ) -> Result<bool, ServiceError> {
         let records = self.records.lock().map_err(lock_error)?;
-        if !presentations(grant_type, &input.headers, records.values()).is_empty() {
-            return Ok(true);
-        }
-        if grant_type != &GrantType::ApiKey {
-            return Ok(false);
-        }
-        for value in input.headers.values() {
-            let Ok(value) = value.to_str() else {
-                continue;
-            };
-            let candidate: [u8; 32] = Sha256::digest(value.as_bytes()).into();
-            if records.values().any(|record| {
-                record.grant_type == GrantType::ApiKey
-                    && bool::from(record.verifier.ct_eq(&candidate))
-            }) {
-                return Ok(true);
-            }
-        }
-        Ok(false)
+        Ok(!presentations(grant_type, &input.headers, records.values()).is_empty())
     }
 
     async fn revoke_credential(

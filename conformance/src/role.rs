@@ -108,10 +108,7 @@ impl GrantTypeHandler for ApiKeyHandler {
         &self,
         input: &CredentialAuthenticationInput,
     ) -> Result<bool, ServiceError> {
-        Ok(
-            input.headers.contains_key("x-api-key")
-                || input.headers.contains_key("service-api-key"),
-        )
+        Ok(input.headers.contains_key("x-api-key"))
     }
 }
 
