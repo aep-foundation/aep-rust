@@ -358,7 +358,7 @@ fn validate_expected_claims(
         .unwrap_or(RECOMMENDED_CLOCK_SKEW.as_secs());
     let tolerance = i64::try_from(tolerance)
         .map_err(|_| CoreError::Invalid("clock tolerance is too large".to_owned()))?;
-    if claims.iat > now.saturating_add(tolerance) || claims.exp < now.saturating_sub(tolerance) {
+    if claims.iat > now.saturating_add(tolerance) || claims.exp <= now.saturating_sub(tolerance) {
         return Err(CoreError::Invalid(
             "AEP client assertion is outside its validity window".to_owned(),
         ));
@@ -495,6 +495,33 @@ HMacx3g7kP+jGzNEdPXNVpmcqyQxe3Ffb2VWVcxnWIu7fR1d/Il52p9E
             Some("did:web:agent.example#key-1")
         );
         assert_eq!(decoded.payload.get("jti"), Some(&Value::from("jti-1")));
+    }
+
+    #[test]
+    fn rejects_the_expiration_boundary() {
+        let signing_key = ClientAssertionSigningKey::ed25519_from_seed([7; 32]);
+        let assertion = sign_client_assertion(
+            &claims(AssertionOperation::Status, "expiration-boundary"),
+            SignClientAssertionOptions {
+                allow_insecure_loopback: false,
+                key: &signing_key,
+                key_id: "did:web:agent.example#key-1",
+            },
+        )
+        .expect("signed assertion");
+
+        assert!(
+            verify_client_assertion(
+                &assertion,
+                &signing_key.verifying_key(),
+                &VerifyClientAssertionOptions {
+                    clock_tolerance_seconds: Some(30),
+                    current_time: Some(1_748_428_890),
+                    ..VerifyClientAssertionOptions::default()
+                },
+            )
+            .is_err()
+        );
     }
 
     #[test]

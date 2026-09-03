@@ -202,7 +202,7 @@ fn inside_validity_window(
         return false;
     };
     let timestamp = now.unix_timestamp();
-    claims.iat <= timestamp.saturating_add(skew) && claims.exp >= timestamp.saturating_sub(skew)
+    claims.iat <= timestamp.saturating_add(skew) && claims.exp > timestamp.saturating_sub(skew)
 }
 
 fn supports_identity_method(agent_did: &str, methods: &[IdentityMethod]) -> bool {

@@ -909,12 +909,28 @@ fn validate_completed_sign(
     claims: &ClientAssertionClaims,
     identity: &AgentIdentity,
 ) -> Result<String, AgentError> {
-    let issued_at = response.issued_at.as_deref().and_then(|value| {
-        OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339).ok()
-    });
-    let expires_at = response.expires_at.as_deref().and_then(|value| {
-        OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339).ok()
-    });
+    let issued_at = response
+        .issued_at
+        .as_deref()
+        .and_then(|value| {
+            OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339).ok()
+        })
+        .map(OffsetDateTime::unix_timestamp);
+    let expires_at = response
+        .expires_at
+        .as_deref()
+        .and_then(|value| {
+            OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339).ok()
+        })
+        .map(OffsetDateTime::unix_timestamp);
+    let requested_lifetime = claims.exp.checked_sub(claims.iat);
+    let response_lifetime = expires_at
+        .zip(issued_at)
+        .and_then(|(expires, issued)| expires.checked_sub(issued));
+    let valid_lifetime = match (requested_lifetime, response_lifetime) {
+        (Some(requested), Some(returned)) => returned > 0 && returned == requested,
+        _ => false,
+    };
     let Some(assertion) = response
         .client_assertion
         .as_deref()
@@ -927,8 +943,7 @@ fn validate_completed_sign(
     if response.agent_did.as_deref() != Some(identity.agent_did.as_str())
         || response.service_did.as_deref() != Some(identity.service_did.as_str())
         || response.jti.as_deref() != Some(claims.jti.as_str())
-        || issued_at.map(OffsetDateTime::unix_timestamp) != Some(claims.iat)
-        || expires_at.map(OffsetDateTime::unix_timestamp) != Some(claims.exp)
+        || !valid_lifetime
     {
         return Err(AgentError::Identity(
             "AEP Platform returned an invalid completed Sign response".to_owned(),

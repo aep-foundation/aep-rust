@@ -88,6 +88,29 @@ impl ClientAssertionVerifier for RecordingVerifier {
     }
 }
 
+struct ExpirationBoundaryVerifier;
+
+#[async_trait]
+impl ClientAssertionVerifier for ExpirationBoundaryVerifier {
+    async fn verify(
+        &self,
+        context: ClientAssertionVerificationContext,
+    ) -> Result<ClientAssertionClaims, ServiceError> {
+        let expiration = context.current_time.unix_timestamp() - 30;
+        Ok(ClientAssertionClaims {
+            additional: BTreeMap::new(),
+            aud: context.service_did,
+            exp: expiration,
+            iat: expiration - 60,
+            iss: agent_did().to_owned(),
+            jti: "expiration-boundary".to_owned(),
+            op: context.operation,
+            resource: context.resource.map(|resource| resource.to_string()),
+            sub: agent_did().to_owned(),
+        })
+    }
+}
+
 #[derive(Default)]
 struct RecordingGrantHandler {
     grants: Mutex<Vec<GrantRequest>>,
@@ -496,6 +519,22 @@ fn rejects_replayed_assertions_and_ambiguous_authorization_carriers() {
         let ProtectedResourceAuthentication::Rejected(response) = result else {
             panic!("rejection expected");
         };
+        assert_problem(&response, ErrorCode::NotRecognized, 401);
+    });
+}
+
+#[test]
+fn rejects_expiration_boundary_from_custom_verifier() {
+    block_on(async {
+        let mut options = ServiceOptions::new(service_did(), Arc::new(ExpirationBoundaryVerifier));
+        options.clock = Some(Arc::new(FixedClock(fixed_time())));
+        let service = Service::new(options).expect("Service");
+
+        let response = service
+            .status(authenticated("assertion"))
+            .await
+            .expect("Status response");
+
         assert_problem(&response, ErrorCode::NotRecognized, 401);
     });
 }
