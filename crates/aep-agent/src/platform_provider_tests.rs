@@ -111,8 +111,8 @@ fn validates_completed_and_pending_sign_contracts() {
     let mut completed: PlatformSignResponse = serde_json::from_value(serde_json::json!({
         "agent_did": identity.agent_did,
         "client_assertion": "assertion",
-        "expires_at": "2026-08-31T12:05:00Z",
-        "issued_at": "2026-08-31T12:00:00Z",
+        "expires_at": "2026-08-31T12:05:01Z",
+        "issued_at": "2026-08-31T12:00:01Z",
         "jti": "assertion-one",
         "service_did": identity.service_did,
         "status": "completed"
@@ -122,6 +122,9 @@ fn validates_completed_and_pending_sign_contracts() {
         validate_completed_sign(&completed, &claims, &identity).expect("valid response"),
         "assertion"
     );
+    completed.expires_at = Some("2026-08-31T12:06:01Z".to_owned());
+    assert!(validate_completed_sign(&completed, &claims, &identity).is_err());
+    completed.expires_at = Some("2026-08-31T12:05:01Z".to_owned());
     completed.client_assertion = Some(String::new());
     assert!(validate_completed_sign(&completed, &claims, &identity).is_err());
 
