@@ -192,8 +192,12 @@ struct InteropState {
 async fn run_server(listen: &str) -> Result<(), Box<dyn std::error::Error>> {
     let origin = Url::parse(&format!("http://{listen}"))?;
     let service_did = format!("did:web:{}:services:store", listen.replace(':', "%3A"));
+    let platform_service_did = std::env::var("AEP_INTEROP_SERVICE_DID")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| service_did.clone());
     let service = create_service(service_did.clone(), &origin)?;
-    let platform = create_platform(listen, service_did.clone())?;
+    let platform = create_platform(listen, platform_service_did)?;
     let state = InteropState {
         platform,
         service_did,
