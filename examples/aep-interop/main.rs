@@ -13,10 +13,10 @@ use aep_core::{
     SigningAlgorithm, StringBoolean, TransportError, sign_client_assertion,
 };
 use aep_platform::{
-    AgentIdentityListResponse, AuthorizationRequest, Authorizer, DidVerificationMethod,
-    DiscoveryOptions, IdentityListQuery, IdentityRecord, KeyStore, ManagedAgentStatus, Platform,
-    PlatformError, PlatformOptions, PlatformResponse, ProvisionRequest, RequestContext,
-    ResponseBody, ServiceDidResolver, SignRequest,
+    AgentIdentityListResponse, AuthorizationRequest, Authorizer, DID_MEDIA_TYPE,
+    DidVerificationMethod, DiscoveryOptions, IdentityListQuery, IdentityRecord, KeyStore,
+    ManagedAgentStatus, Platform, PlatformError, PlatformOptions, PlatformResponse,
+    ProvisionRequest, RequestContext, ResponseBody, ServiceDidResolver, SignRequest,
 };
 use aep_service::{
     DidWebClientAssertionVerifier, MemoryServiceCredentialStore, ReqwestTransport, Service,
@@ -186,14 +186,18 @@ impl HttpTransport for LoopbackPlatformTransport {
 #[derive(Clone)]
 struct InteropState {
     platform: Arc<Platform>,
+    service_did: String,
 }
 
 async fn run_server(listen: &str) -> Result<(), Box<dyn std::error::Error>> {
     let origin = Url::parse(&format!("http://{listen}"))?;
     let service_did = format!("did:web:{}:services:store", listen.replace(':', "%3A"));
     let service = create_service(service_did.clone(), &origin)?;
-    let platform = create_platform(listen, service_did)?;
-    let state = InteropState { platform };
+    let platform = create_platform(listen, service_did.clone())?;
+    let state = InteropState {
+        platform,
+        service_did,
+    };
 
     let mut authentication = AuthenticationOptions::new(origin);
     authentication.allow_insecure_loopback = true;
@@ -216,6 +220,7 @@ async fn run_server(listen: &str) -> Result<(), Box<dyn std::error::Error>> {
             "/platform/agent-identities/{identity}/sign",
             post(platform_sign),
         )
+        .route("/services/store/did.json", get(service_did_document))
         .route("/agents/{agent}/did.json", get(platform_did_document))
         .with_state(state);
     let application = router(service, 1 << 20)?
@@ -232,6 +237,17 @@ async fn resource(_principal: AepPrincipal) -> Json<Value> {
 
 async fn profile(_principal: AepPrincipal) -> Json<Value> {
     Json(json!({"updated": true}))
+}
+
+async fn service_did_document(State(state): State<InteropState>) -> Response {
+    (
+        [(header::CONTENT_TYPE, DID_MEDIA_TYPE)],
+        Json(json!({
+            "@context": ["https://www.w3.org/ns/did/v1"],
+            "id": state.service_did,
+        })),
+    )
+        .into_response()
 }
 
 async fn platform_discovery(State(state): State<InteropState>) -> Response {
