@@ -90,7 +90,7 @@ jobs:
           bundler-cache: true
           working-directory: .conformance/aep-specs/ietf
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
 
