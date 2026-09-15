@@ -4,6 +4,10 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    ignore:
+      # jwt-compact requires p256 0.13; see https://github.com/aep-foundation/aep-rust/issues/23.
+      - dependency-name: p256
+        versions: [">=0.14, <0.15"]
 
   - package-ecosystem: github-actions
     directory: /
