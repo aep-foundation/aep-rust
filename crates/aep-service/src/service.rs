@@ -686,11 +686,15 @@ fn idempotency_input(
     request: &impl Serialize,
 ) -> Result<CommandIdempotencyInput, ServiceError> {
     let canonical = serde_json::to_vec(request)?;
+    let digest: String = Sha256::digest(canonical)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
     Ok(CommandIdempotencyInput {
         agent_did: agent_did.to_owned(),
         command,
         idempotency_key: idempotency_key.to_owned(),
-        request_hash: format!("sha256:{:x}", Sha256::digest(canonical)),
+        request_hash: format!("sha256:{digest}"),
     })
 }
 
