@@ -653,7 +653,10 @@ impl Platform {
         if idempotency_key.is_empty() || context.principal.is_empty() {
             return Ok(problem(400, ErrorCode::InvalidRequest));
         }
-        let request_hash = format!("{:x}", Sha256::digest(serde_json::to_vec(material)?));
+        let request_hash = Sha256::digest(serde_json::to_vec(material)?)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
         let result = self
             .idempotency_store
             .execute(
