@@ -133,8 +133,11 @@ pub fn validate_inspect_document(document: &InspectDocument) -> Result<(), Valid
             }
         }
     }
+    // CORE-HTTP-004 appends the command path to this value with one `/` separator, so a base
+    // carrying a query, a fragment, or a dot segment would steer every command URL away from the
+    // advertised base. The document is refused rather than left to fail at path construction.
     if let Some(endpoint_base) = &document.http.endpoint_base
-        && (!endpoint_base.starts_with('/') || endpoint_base.starts_with("//"))
+        && crate::normalize_endpoint_base(Some(endpoint_base)).is_err()
     {
         issues.push(issue(
             "$.http.endpoint_base",

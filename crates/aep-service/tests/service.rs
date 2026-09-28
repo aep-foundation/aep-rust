@@ -29,6 +29,7 @@ impl HttpTransport for DidDocumentTransport {
         let public_key = SigningKey::from_bytes(&[7; 32]).verifying_key();
         Ok(HttpResponse {
             body: serde_json::to_vec(&json!({
+                "id": "did:web:agent.example",
                 "verificationMethod": [{
                     "id": "did:web:agent.example#key-1",
                     "publicKeyJwk": {
@@ -254,7 +255,8 @@ fn enrolls_reports_status_and_replays_an_existing_lifecycle() {
             )
             .await
             .expect("missing Claim response");
-        assert_problem(&missing, ErrorCode::RequirementsUnmet, 403);
+        // CORE-ERR-009 pairs `requirements_unmet` with 422.
+        assert_problem(&missing, ErrorCode::RequirementsUnmet, 422);
         let ResponseBody::Problem(problem) = missing.body else {
             panic!("Problem Details expected");
         };
@@ -591,7 +593,55 @@ fn verifies_a_real_did_web_client_assertion() {
             .await
             .expect("verified assertion");
         assert_eq!(verified, claims);
+
+        // CORE-CA-016: an `authenticate` assertion carries the resource it was minted for, and
+        // the verifier checks it against the target the caller names.
+        let resource = Url::parse("https://service.example/v1/orders").expect("resource");
+        let authenticate = ClientAssertionClaims {
+            jti: "jti-authenticate".to_owned(),
+            op: AssertionOperation::Authenticate,
+            resource: Some(resource.to_string()),
+            ..claims.clone()
+        };
+        let assertion = sign_client_assertion(
+            &authenticate,
+            SignClientAssertionOptions {
+                allow_insecure_loopback: false,
+                key: &signing_key,
+                key_id: "did:web:agent.example#key-1",
+            },
+        )
+        .expect("signed assertion");
+        let context = |resource: Url| ClientAssertionVerificationContext {
+            assertion: assertion.clone(),
+            current_time: fixed_time(),
+            idempotency_key: None,
+            operation: AssertionOperation::Authenticate,
+            resource: Some(resource),
+            service_did: service_did().to_owned(),
+            signing_algorithms: vec![SigningAlgorithm::EdDsa],
+        };
+        assert_eq!(
+            verifier.verify(context(resource)).await.expect("verified"),
+            authenticate
+        );
+        assert!(
+            verifier
+                .verify(context(
+                    Url::parse("https://service.example/v1/other").expect("resource")
+                ))
+                .await
+                .is_err()
+        );
     });
+}
+
+/// The bundled transport refuses a configuration it cannot enforce.
+#[test]
+fn the_bundled_transport_requires_usable_bounds() {
+    assert!(ReqwestTransport::new(1 << 20, std::time::Duration::from_secs(30)).is_ok());
+    assert!(ReqwestTransport::new(0, std::time::Duration::from_secs(30)).is_err());
+    assert!(ReqwestTransport::new(1 << 20, std::time::Duration::ZERO).is_err());
 }
 
 #[test]
@@ -605,10 +655,21 @@ fn coalesces_concurrent_idempotent_operations() {
             idempotency_key: "key-1".to_owned(),
             request_hash: "sha256:one".to_owned(),
         };
-        let operation = |executions: Arc<AtomicUsize>| -> CommandOperation {
+        let (started, entered) = futures::channel::oneshot::channel();
+        let (release, waiting) = futures::channel::oneshot::channel();
+        let operation = |executions: Arc<AtomicUsize>,
+                         barrier: Option<(
+            futures::channel::oneshot::Sender<()>,
+            futures::channel::oneshot::Receiver<()>,
+        )>|
+         -> CommandOperation {
             Box::new(move || {
                 Box::pin(async move {
                     executions.fetch_add(1, Ordering::SeqCst);
+                    if let Some((started, waiting)) = barrier {
+                        started.send(()).expect("started");
+                        waiting.await.expect("released");
+                    }
                     Ok(ServiceResponse {
                         body: ResponseBody::Enroll(EnrollResponse {
                             additional: BTreeMap::new(),
@@ -623,10 +684,19 @@ fn coalesces_concurrent_idempotent_operations() {
                 })
             })
         };
-        let (first, second) = futures::join!(
-            store.execute(input.clone(), operation(executions.clone())),
-            store.execute(input, operation(executions.clone()))
+        let first = store.execute(
+            input.clone(),
+            operation(executions.clone(), Some((started, waiting))),
         );
+        let second = async {
+            entered.await.expect("first operation is running");
+            let mut second = Box::pin(store.execute(input, operation(executions.clone(), None)));
+            assert!(futures::poll!(second.as_mut()).is_pending());
+            assert_eq!(executions.load(Ordering::SeqCst), 1);
+            release.send(()).expect("release first");
+            second.await
+        };
+        let (first, second) = futures::join!(first, second);
         assert!(matches!(
             first.expect("first"),
             CommandIdempotencyResult::Created(_)

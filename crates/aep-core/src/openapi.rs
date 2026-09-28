@@ -15,6 +15,96 @@ pub struct OpenApiPathMatch {
     pub template: String,
 }
 
+/// How an Agent must treat the security an operation resolves to.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OpenApiSecurityDisposition {
+    Public,
+    OptionalAnonymous,
+    Required,
+    Alternatives,
+    AllRequired,
+    FallbackLiveChallenge,
+}
+
+impl OpenApiSecurityDisposition {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Public => "public",
+            Self::OptionalAnonymous => "optional-anonymous",
+            Self::Required => "required",
+            Self::Alternatives => "alternatives",
+            Self::AllRequired => "all-required",
+            Self::FallbackLiveChallenge => "fallback-live-challenge",
+        }
+    }
+}
+
+/// The resolved security for one operation.
+///
+/// `satisfiable` lists the complete requirement objects the Agent can satisfy, each as the scheme
+/// names it must present together. It is empty unless the disposition selects credentials.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OpenApiSecurityResolution {
+    pub disposition: OpenApiSecurityDisposition,
+    pub satisfiable: Vec<Vec<String>>,
+}
+
+/// Resolves the effective security for one operation (CORE-OAS-011/013/014/015).
+///
+/// Operation-level security replaces the root value rather than adding to it, an empty list makes
+/// the operation public, an empty requirement object is an anonymous alternative, several
+/// requirement objects are alternatives, and several schemes inside one object are compound. An
+/// Agent that cannot satisfy every member of a compound requirement treats that requirement as
+/// unsupported and never reduces it to the members it does support, so the requirements reported
+/// as satisfiable are always whole requirement objects.
+#[must_use]
+pub fn resolve_openapi_security(
+    root: Option<&[Vec<String>]>,
+    operation: Option<&[Vec<String>]>,
+    supported_schemes: &[String],
+) -> OpenApiSecurityResolution {
+    let effective = operation.or(root).unwrap_or(&[]);
+    if effective.is_empty() {
+        return OpenApiSecurityResolution {
+            disposition: OpenApiSecurityDisposition::Public,
+            satisfiable: Vec::new(),
+        };
+    }
+    if effective.iter().any(Vec::is_empty) {
+        return OpenApiSecurityResolution {
+            disposition: OpenApiSecurityDisposition::OptionalAnonymous,
+            satisfiable: Vec::new(),
+        };
+    }
+    let satisfiable: Vec<Vec<String>> = effective
+        .iter()
+        .filter(|requirement| {
+            requirement
+                .iter()
+                .all(|scheme| supported_schemes.contains(scheme))
+        })
+        .cloned()
+        .collect();
+    let Some(only) = satisfiable.first() else {
+        return OpenApiSecurityResolution {
+            disposition: OpenApiSecurityDisposition::FallbackLiveChallenge,
+            satisfiable: Vec::new(),
+        };
+    };
+    let disposition = if effective.len() > 1 {
+        OpenApiSecurityDisposition::Alternatives
+    } else if only.len() > 1 {
+        OpenApiSecurityDisposition::AllRequired
+    } else {
+        OpenApiSecurityDisposition::Required
+    };
+    OpenApiSecurityResolution {
+        disposition,
+        satisfiable,
+    }
+}
+
 pub fn match_openapi_path(
     templates: &[String],
     options: &OpenApiPathMatchOptions,
@@ -88,7 +178,10 @@ pub fn resolve_openapi_url(
     reference: &str,
     allow_insecure_loopback: bool,
 ) -> Result<Url, CoreError> {
-    if final_inspect_url.scheme() != "https"
+    let development_origin = allow_insecure_loopback
+        && final_inspect_url.scheme() == "http"
+        && final_inspect_url.host_str().is_some_and(is_loopback_host);
+    if (final_inspect_url.scheme() != "https" && !development_origin)
         || final_inspect_url.host_str().is_none()
         || !final_inspect_url.username().is_empty()
         || final_inspect_url.password().is_some()
@@ -127,7 +220,13 @@ fn path_segments(path: &str, trailing_slash: OpenApiTrailingSlash) -> Vec<&str> 
     path.strip_prefix('/').unwrap_or(path).split('/').collect()
 }
 
-pub(crate) fn is_loopback_host(host: &str) -> bool {
+/// Reports whether a URL host is one of the three loopback names that admit plaintext HTTP.
+///
+/// CORE-OAS-003 spells the exception syntactically: `localhost`, `127.0.0.1`, or `[::1]` and
+/// nothing else. A name that happens to resolve to a loopback address, and any other address in
+/// `127.0.0.0/8`, does not qualify.
+#[must_use]
+pub fn is_loopback_host(host: &str) -> bool {
     matches!(host, "localhost" | "127.0.0.1" | "[::1]" | "::1")
 }
 

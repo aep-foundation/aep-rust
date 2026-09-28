@@ -166,6 +166,24 @@ impl ScriptedTransport {
             });
     }
 
+    /// Pushes an RFC 9457 error response under the media type CORE-ERR-001 defines for it.
+    fn push_problem(&self, status: StatusCode, body: serde_json::Value) {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static(PROBLEM_MEDIA_TYPE),
+        );
+        self.responses
+            .lock()
+            .expect("responses lock")
+            .push_back(Response {
+                status,
+                headers,
+                body: serde_json::to_vec(&body).expect("JSON"),
+                final_url: None,
+            });
+    }
+
     fn push(&self, response: Response) {
         self.responses
             .lock()
@@ -1136,7 +1154,7 @@ fn reports_command_failures_and_rejects_unadvertised_operations() {
             "type": "urn:aep:error:verification_pending", "title": "Pending", "status": 409,
             "code": "verification_pending", "verification_pending": ["owner_approval"]
         });
-        transport.push_json(StatusCode::CONFLICT, problem);
+        transport.push_problem(StatusCode::CONFLICT, problem.clone());
         let session = client(transport, Arc::new(RecordingSigner::default()))
             .service("service.example")
             .expect("session");
@@ -1148,6 +1166,31 @@ fn reports_command_failures_and_rejects_unadvertised_operations() {
                 problem: Some(_)
             }
         ));
+
+        // A body that is not served as Problem Details, or whose status disagrees with the
+        // response, is reported as the bare status rather than as a structured AEP problem.
+        for response in [
+            (StatusCode::CONFLICT, problem.clone(), false),
+            (StatusCode::FORBIDDEN, problem.clone(), true),
+        ] {
+            let transport = Arc::new(ScriptedTransport::default());
+            transport.push_json(
+                StatusCode::OK,
+                inspect_document(serde_json::json!({"methods": ["aep-jwt"]})),
+            );
+            if response.2 {
+                transport.push_problem(response.0, response.1);
+            } else {
+                transport.push_json(response.0, response.1);
+            }
+            let session = client(transport, Arc::new(RecordingSigner::default()))
+                .service("service.example")
+                .expect("session");
+            assert!(matches!(
+                session.status().await.expect_err("command failure"),
+                AgentError::Command { problem: None, .. }
+            ));
+        }
     });
 }
 
@@ -1537,6 +1580,328 @@ fn aep_response(body: Vec<u8>) -> Response {
 }
 
 #[test]
+fn both_discovery_paths_revalidate_aged_expired_and_repeated_cache_policies() {
+    block_on(async {
+        let start = OffsetDateTime::parse("2026-08-31T12:00:00Z", &Rfc3339).expect("time");
+        for platform in [false, true] {
+            for fields in [
+                vec![(header::CACHE_CONTROL, "max-age=300"), (header::AGE, "299")],
+                vec![
+                    (header::CACHE_CONTROL, "max-age=300"),
+                    (header::DATE, "Mon, 31 Aug 2026 11:55:01 GMT"),
+                ],
+                vec![(header::EXPIRES, "Mon, 31 Aug 2026 12:00:01 GMT")],
+                vec![
+                    (header::CACHE_CONTROL, "max-age=300"),
+                    (header::CACHE_CONTROL, "no-store"),
+                ],
+                vec![
+                    (header::CACHE_CONTROL, "max-age=300"),
+                    (header::CACHE_CONTROL, "no-cache"),
+                ],
+            ] {
+                let transport = Arc::new(ScriptedTransport::default());
+                let document = if platform {
+                    platform_discovery()
+                } else {
+                    inspect_document(serde_json::Value::Null)
+                };
+                let mut headers = aep_headers();
+                headers.insert(header::ETAG, HeaderValue::from_static("\"cached\""));
+                for (name, value) in &fields {
+                    headers.append(name.clone(), HeaderValue::from_static(value));
+                }
+                transport.push(Response {
+                    status: StatusCode::OK,
+                    headers,
+                    body: serde_json::to_vec(&document).expect("JSON"),
+                    final_url: None,
+                });
+                if platform {
+                    transport.push_json(
+                        StatusCode::OK,
+                        serde_json::json!({"count": "0", "data": [], "total": "0"}),
+                    );
+                }
+                transport.push_json(StatusCode::OK, document);
+                if platform {
+                    transport.push_json(
+                        StatusCode::OK,
+                        serde_json::json!({"count": "0", "data": [], "total": "0"}),
+                    );
+                }
+                let clock = Arc::new(AdvancingClock(Mutex::new(start)));
+                if platform {
+                    let mut options =
+                        PlatformIdentityProviderOptions::new("https://platform.example");
+                    options.clock = Some(clock.clone());
+                    options.transport = Some(transport.clone());
+                    let provider = PlatformIdentityProvider::new(options).expect("provider");
+                    provider
+                        .find_identity_by_service_did("did:web:service.example")
+                        .await
+                        .expect("first lookup");
+                    *clock.0.lock().expect("clock") += time::Duration::seconds(2);
+                    provider
+                        .find_identity_by_service_did("did:web:service.example")
+                        .await
+                        .expect("second lookup");
+                } else {
+                    let mut options = ClientOptions::new(Arc::new(TestIdentityProvider {
+                        signer: Arc::new(RecordingSigner::default()),
+                    }));
+                    options.clock = Some(clock.clone());
+                    options.inspect_transport = Some(transport.clone());
+                    options.command_transport = Some(transport.clone());
+                    let session = Client::new(options)
+                        .expect("client")
+                        .service("service.example")
+                        .expect("session");
+                    session.inspect().await.expect("first Inspect");
+                    *clock.0.lock().expect("clock") += time::Duration::seconds(2);
+                    session.inspect().await.expect("second Inspect");
+                }
+                let requests = transport.requests.lock().expect("requests");
+                assert_eq!(requests.len(), if platform { 4 } else { 2 }, "{fields:?}");
+                let refreshed = &requests[if platform { 2 } else { 1 }];
+                if fields.iter().any(|(_, value)| *value == "no-store") {
+                    assert!(!refreshed.headers.contains_key(header::IF_NONE_MATCH));
+                } else {
+                    assert_eq!(refreshed.headers[header::IF_NONE_MATCH], "\"cached\"");
+                }
+            }
+        }
+    });
+}
+
+#[test]
+fn response_media_validation_runs_on_inspect_service_and_platform_commands() {
+    block_on(async {
+        for media in [
+            "APPLICATION/AEP+JSON; note=\"a;b,c\\\"d\"",
+            "application/aep+json; charset=\"unterminated",
+        ] {
+            let valid = media.starts_with("APPLICATION");
+            for target in [
+                "inspect",
+                "service-command",
+                "platform-discovery",
+                "platform-command",
+            ] {
+                let transport = Arc::new(ScriptedTransport::default());
+                let response = |body: serde_json::Value| Response {
+                    status: StatusCode::OK,
+                    headers: HeaderMap::from_iter([(
+                        header::CONTENT_TYPE,
+                        HeaderValue::from_static(media),
+                    )]),
+                    body: serde_json::to_vec(&body).expect("JSON"),
+                    final_url: None,
+                };
+                let succeeded = match target {
+                    "inspect" => {
+                        transport.push(response(inspect_document(serde_json::Value::Null)));
+                        client(transport, Arc::new(RecordingSigner::default()))
+                            .service("service.example")
+                            .expect("session")
+                            .inspect()
+                            .await
+                            .is_ok()
+                    }
+                    "service-command" => {
+                        transport
+                            .push_json(StatusCode::OK, inspect_document(serde_json::Value::Null));
+                        transport.push(response(serde_json::json!({"status": "active"})));
+                        client(transport, Arc::new(RecordingSigner::default()))
+                            .service("service.example")
+                            .expect("session")
+                            .status()
+                            .await
+                            .is_ok()
+                    }
+                    "platform-discovery" => {
+                        transport.push(response(platform_discovery()));
+                        transport.push_json(
+                            StatusCode::OK,
+                            serde_json::json!({"count": "0", "data": [], "total": "0"}),
+                        );
+                        platform_provider(transport)
+                            .find_identity_by_service_did("did:web:service.example")
+                            .await
+                            .is_ok()
+                    }
+                    _ => {
+                        transport.push_json(StatusCode::OK, platform_discovery());
+                        transport.push(response(
+                            serde_json::json!({"count": "0", "data": [], "total": "0"}),
+                        ));
+                        platform_provider(transport)
+                            .find_identity_by_service_did("did:web:service.example")
+                            .await
+                            .is_ok()
+                    }
+                };
+                assert_eq!(succeeded, valid, "{target}: {media}");
+            }
+        }
+    });
+}
+
+#[test]
+fn both_discovery_paths_merge_304_metadata_and_evict_no_store_redirects() {
+    block_on(async {
+        for platform in [false, true] {
+            for no_store in [false, true] {
+                let transport = Arc::new(ScriptedTransport::default());
+                transport.push(Response {
+                    status: StatusCode::FOUND,
+                    headers: HeaderMap::from_iter([(
+                        header::LOCATION,
+                        HeaderValue::from_static("/discovery/current"),
+                    )]),
+                    body: Vec::new(),
+                    final_url: None,
+                });
+                let document = if platform {
+                    platform_discovery()
+                } else {
+                    inspect_document(serde_json::Value::Null)
+                };
+                let mut headers = aep_headers();
+                headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+                headers.insert(header::ETAG, HeaderValue::from_static("\"one\""));
+                headers.insert(
+                    header::LAST_MODIFIED,
+                    HeaderValue::from_static("Mon, 31 Aug 2026 11:00:00 GMT"),
+                );
+                transport.push(Response {
+                    status: StatusCode::OK,
+                    headers,
+                    body: serde_json::to_vec(&document).expect("JSON"),
+                    final_url: None,
+                });
+                if platform {
+                    transport.push_json(
+                        StatusCode::OK,
+                        serde_json::json!({"count": "0", "data": [], "total": "0"}),
+                    );
+                }
+                let mut headers = HeaderMap::from_iter([
+                    (
+                        header::CACHE_CONTROL,
+                        HeaderValue::from_static("max-age=300"),
+                    ),
+                    (header::ETAG, HeaderValue::from_static("\"two\"")),
+                    (
+                        header::DATE,
+                        HeaderValue::from_static("Mon, 31 Aug 2026 12:00:00 GMT"),
+                    ),
+                    (header::AGE, HeaderValue::from_static("299")),
+                ]);
+                if no_store {
+                    headers.append(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+                }
+                transport.push(Response {
+                    status: StatusCode::NOT_MODIFIED,
+                    headers,
+                    body: Vec::new(),
+                    final_url: None,
+                });
+                if platform {
+                    transport.push_json(
+                        StatusCode::OK,
+                        serde_json::json!({"count": "0", "data": [], "total": "0"}),
+                    );
+                }
+                transport.push_json(StatusCode::OK, document);
+                if platform {
+                    transport.push_json(
+                        StatusCode::OK,
+                        serde_json::json!({"count": "0", "data": [], "total": "0"}),
+                    );
+                }
+                let clock = Arc::new(AdvancingClock(Mutex::new(
+                    OffsetDateTime::parse("2026-08-31T12:00:00Z", &Rfc3339).expect("time"),
+                )));
+                if platform {
+                    let mut options =
+                        PlatformIdentityProviderOptions::new("https://platform.example");
+                    options.clock = Some(clock.clone());
+                    options.transport = Some(transport.clone());
+                    options.authorization = Some("Bearer platform-secret".to_owned());
+                    let provider = PlatformIdentityProvider::new(options).expect("provider");
+                    for iteration in 0..3 {
+                        if iteration == 2 {
+                            *clock.0.lock().expect("clock") += time::Duration::seconds(2);
+                        }
+                        provider
+                            .find_identity_by_service_did("did:web:service.example")
+                            .await
+                            .expect("lookup");
+                    }
+                } else {
+                    let mut options = ClientOptions::new(Arc::new(TestIdentityProvider {
+                        signer: Arc::new(RecordingSigner::default()),
+                    }));
+                    options.clock = Some(clock.clone());
+                    options.inspect_transport = Some(transport.clone());
+                    options.command_transport = Some(transport.clone());
+                    let cache = Arc::new(MemoryInspectCache::default());
+                    options.inspect_cache = Some(cache.clone());
+                    let session = Client::new(options)
+                        .expect("client")
+                        .service("service.example")
+                        .expect("session");
+                    for iteration in 0..3 {
+                        if iteration == 2 {
+                            *clock.0.lock().expect("clock") += time::Duration::seconds(2);
+                        }
+                        session.inspect().await.expect("Inspect");
+                        if iteration == 1 && no_store {
+                            for url in [
+                                "https://service.example/.well-known/aep",
+                                "https://service.example/discovery/current",
+                            ] {
+                                assert!(
+                                    cache
+                                        .find(&Url::parse(url).expect("URL"))
+                                        .await
+                                        .expect("cache lookup")
+                                        .is_none()
+                                );
+                            }
+                        }
+                    }
+                }
+                let requests = transport.requests.lock().expect("requests");
+                assert_eq!(requests.len(), if platform { 7 } else { 4 });
+                let conditional = &requests[if platform { 3 } else { 2 }];
+                assert_eq!(conditional.url.path(), "/discovery/current");
+                assert_eq!(conditional.headers[header::IF_NONE_MATCH], "\"one\"");
+                let final_fetch = &requests[if platform { 5 } else { 3 }];
+                if no_store {
+                    assert_eq!(
+                        final_fetch.url.path(),
+                        if platform {
+                            "/.well-known/aep-platform"
+                        } else {
+                            "/.well-known/aep"
+                        }
+                    );
+                    assert!(!final_fetch.headers.contains_key(header::IF_NONE_MATCH));
+                } else {
+                    assert_eq!(final_fetch.url.path(), "/discovery/current");
+                    assert_eq!(final_fetch.headers[header::IF_NONE_MATCH], "\"two\"");
+                    assert!(final_fetch.headers.contains_key(header::IF_MODIFIED_SINCE));
+                }
+                assert!(!conditional.headers.contains_key(header::AUTHORIZATION));
+                assert!(!final_fetch.headers.contains_key(header::AUTHORIZATION));
+            }
+        }
+    });
+}
+
+#[test]
 fn redacts_agent_credentials_from_debug_output() {
     let issued_at = OffsetDateTime::parse("2026-08-31T12:00:00Z", &Rfc3339).expect("time");
     let record = CredentialRecord {
@@ -1643,4 +2008,56 @@ async fn reqwest_transport_sends_requests_and_bounds_responses() {
         .expect_err("bounded response");
     assert!(error.to_string().contains("configured limit"));
     server.join().expect("server thread");
+}
+
+#[tokio::test]
+async fn reqwest_transport_reports_connection_and_truncated_body_failures() {
+    use std::{
+        io::{BufRead as _, BufReader, Read as _, Write as _},
+        net::TcpListener,
+    };
+    let transport =
+        ReqwestTransport::new(1024, std::time::Duration::from_secs(2)).expect("transport");
+    let closed = TcpListener::bind("127.0.0.1:0").expect("listener");
+    let address = closed.local_addr().expect("address");
+    drop(closed);
+    let request = |address| HttpRequest {
+        method: Method::POST,
+        url: Url::parse(&format!("http://{address}/status")).expect("URL"),
+        headers: HeaderMap::new(),
+        body: b"request-body".to_vec(),
+    };
+    let error = transport
+        .send(request(address))
+        .await
+        .expect_err("connection refused");
+    assert!(error.to_string().contains("send HTTP request"));
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
+    let address = listener.local_addr().expect("address");
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("connection");
+        {
+            let mut reader = BufReader::new(&mut stream);
+            loop {
+                let mut line = String::new();
+                assert!(reader.read_line(&mut line).expect("request header") > 0);
+                if line == "\r\n" {
+                    break;
+                }
+            }
+            let mut body = [0_u8; 12];
+            reader.read_exact(&mut body).expect("request body");
+            assert_eq!(&body, b"request-body");
+        }
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 20\r\nConnection: close\r\n\r\npartial")
+            .expect("partial response");
+    });
+    let error = transport
+        .send(request(address))
+        .await
+        .expect_err("incomplete response");
+    assert!(error.to_string().contains("read HTTP response"));
+    server.join().expect("server");
 }

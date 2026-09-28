@@ -13,3 +13,7 @@ cargo run -p aep-examples --bin aep-local-lifecycle
 The transport is local, but the protocol messages, assertion verification, replay protection,
 idempotency, enrollment state, credential storage, credential presentation, and revocation are the
 same public APIs used by networked integrations.
+
+The fixed Ed25519 seed and local DID-document transport make this walkthrough self-contained.
+Production identity providers generate and protect their signing keys and publish resolvable
+DID documents; they do not reuse this example's key.

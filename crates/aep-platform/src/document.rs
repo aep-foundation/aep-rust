@@ -69,6 +69,7 @@ pub fn create_did_document(
             "AEP Platform DID verification method does not match the managed identity".to_owned(),
         ));
     }
+    validate_public_key_jwk(&method.public_key_jwk, identity)?;
     Ok(DidDocument {
         context: vec![DID_CONTEXT.to_owned()],
         assertion_method: vec![method.id.clone()],
@@ -77,6 +78,51 @@ pub fn create_did_document(
         id: identity.agent_did.clone(),
         verification_method: vec![method],
     })
+}
+
+/// A verification method published in a DID document carries public material only (PLT-DID-002),
+/// and the metadata it does carry names this identity's key and an algorithm the identity signs
+/// with, which is what a Service checks before it trusts the key.
+fn validate_public_key_jwk(
+    value: &serde_json::Value,
+    identity: &IdentityRecord,
+) -> Result<(), PlatformError> {
+    // The private members of the JWK key types AEP signs with, plus the symmetric one, so a key
+    // store that handed over a full key pair cannot publish it.
+    const PRIVATE_MEMBERS: [&str; 7] = ["d", "dp", "dq", "k", "p", "q", "qi"];
+    let Some(object) = value.as_object() else {
+        return Err(PlatformError::InvalidConfiguration(
+            "AEP Platform DID verification method does not match the managed identity".to_owned(),
+        ));
+    };
+    if PRIVATE_MEMBERS
+        .iter()
+        .any(|member| object.contains_key(*member))
+    {
+        return Err(PlatformError::InvalidConfiguration(
+            "AEP Platform DID verification method must not publish private key material".to_owned(),
+        ));
+    }
+    if object
+        .get("kid")
+        .is_some_and(|kid| kid.as_str() != Some(identity.key_id.as_str()))
+        || object.get("alg").is_some_and(|algorithm| {
+            algorithm.as_str().is_none_or(|algorithm| {
+                !identity
+                    .signing_algorithms
+                    .iter()
+                    .any(|supported| supported.as_str() == algorithm)
+            })
+        })
+        || object
+            .get("use")
+            .is_some_and(|key_use| key_use.as_str() != Some("sig"))
+    {
+        return Err(PlatformError::InvalidConfiguration(
+            "AEP Platform DID verification method does not match the managed identity".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) fn create_discovery_document(

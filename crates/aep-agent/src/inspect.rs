@@ -1,13 +1,14 @@
-use std::time::Duration;
-
 use aep_core::{
-    DEFAULT_INSPECT_FRESHNESS, DidWebDocumentUrlOptions, HttpRequest, MEDIA_TYPE, WELL_KNOWN_PATH,
+    DidWebDocumentUrlOptions, HttpRequest, MEDIA_TYPE, WELL_KNOWN_PATH,
     did_web_document_url_with_options, parse_inspect_document,
 };
 use http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use time::OffsetDateTime;
 use url::Url;
 
+use crate::http_response::{
+    cache_fresh, cache_headers, cache_storable, header_string, media_type_matches,
+};
 use crate::{AgentError, InspectCacheEntry, InspectErrorCode, Inspection, Session, same_origin};
 
 const MAXIMUM_REDIRECTS: usize = 5;
@@ -17,8 +18,21 @@ impl Session {
         let _guard = self.inspect_lock.lock().await;
         let inspect_url = self.service_url.join(WELL_KNOWN_PATH)?;
         let mut cached = self.client.inspect_cache.find(&inspect_url).await?;
+        // Custom caches cannot make an unsafe redirect or a no-store representation reusable.
+        if cached.as_ref().is_some_and(|entry| {
+            !safe_target(&entry.final_url, &inspect_url) || !cache_storable(&entry.headers)
+        }) {
+            self.client.inspect_cache.delete(&inspect_url).await?;
+            if let Some(entry) = &cached
+                && entry.final_url != inspect_url
+                && safe_target(&entry.final_url, &inspect_url)
+            {
+                self.client.inspect_cache.delete(&entry.final_url).await?;
+            }
+            cached = None;
+        }
         if let Some(entry) = &cached
-            && cache_fresh(entry, self.client.clock.now())
+            && cache_fresh(&entry.headers, entry.cached_at, self.client.clock.now())
         {
             return inspection_from_cache(
                 &self.service_url,
@@ -27,13 +41,6 @@ impl Session {
                 self.client.allow_insecure_loopback,
             );
         }
-        if cached
-            .as_ref()
-            .is_some_and(|entry| !safe_target(&entry.final_url, &inspect_url))
-        {
-            self.client.inspect_cache.delete(&inspect_url).await?;
-            cached = None;
-        }
         let mut current = cached
             .as_ref()
             .map_or_else(|| inspect_url.clone(), |entry| entry.final_url.clone());
@@ -41,13 +48,14 @@ impl Session {
             let mut headers = HeaderMap::new();
             headers.insert(header::ACCEPT, HeaderValue::from_static(MEDIA_TYPE));
             if let Some(entry) = &cached {
-                if let Some(value) = entry.etag.as_deref().and_then(header_value) {
-                    headers.insert(header::IF_NONE_MATCH, value);
+                if let Some(value) = entry.headers.get(header::ETAG) {
+                    headers.insert(header::IF_NONE_MATCH, value.clone());
                 }
-                if let Some(value) = entry.last_modified.as_deref().and_then(header_value) {
-                    headers.insert(header::IF_MODIFIED_SINCE, value);
+                if let Some(value) = entry.headers.get(header::LAST_MODIFIED) {
+                    headers.insert(header::IF_MODIFIED_SINCE, value.clone());
                 }
             }
+            let requested_at = self.client.clock.now();
             let response = self
                 .client
                 .inspect_transport
@@ -61,6 +69,7 @@ impl Session {
                 .map_err(|error| {
                     inspect_error(InspectErrorCode::HttpError, error.to_string(), None)
                 })?;
+            let received_at = self.client.clock.now();
             if response.final_url != current {
                 return Err(inspect_error(
                     InspectErrorCode::InvalidRedirect,
@@ -104,7 +113,7 @@ impl Session {
                 current = next;
                 continue;
             }
-            let inspection = if response.status == StatusCode::NOT_MODIFIED {
+            let entry = if response.status == StatusCode::NOT_MODIFIED {
                 let mut entry = cached.clone().ok_or_else(|| {
                     inspect_error(
                         InspectErrorCode::HttpError,
@@ -112,30 +121,46 @@ impl Session {
                         Some(304),
                     )
                 })?;
-                entry.cached_at = self.client.clock.now();
+                entry.cached_at = received_at;
                 entry.final_url = current.clone();
-                merge_cache_headers(&mut entry, &response.headers);
-                inspection_from_cache(
-                    &self.service_url,
-                    &inspect_url,
-                    entry,
-                    self.client.allow_insecure_loopback,
-                )?
+                entry.headers = cache_headers(
+                    &response.headers,
+                    Some(&entry.headers),
+                    requested_at,
+                    received_at,
+                );
+                entry
             } else {
-                parse_response(self, &inspect_url, &current, response)?
+                parse_response(self, &current, response, requested_at, received_at)?
             };
-            let entry = InspectCacheEntry {
-                cache_control: inspection.cache_control.clone(),
-                cached_at: self.client.clock.now(),
-                document: inspection.document.clone(),
-                etag: inspection.etag.clone(),
-                final_url: inspection.final_url.clone(),
-                last_modified: inspection.last_modified.clone(),
-            };
-            if directive(inspection.cache_control.as_deref(), "no-store").is_some() {
-                self.client.inspect_cache.delete(&inspect_url).await?;
-            } else {
-                self.client.inspect_cache.save(&inspect_url, entry).await?;
+            let inspection = inspection_from_cache(
+                &self.service_url,
+                &inspect_url,
+                entry.clone(),
+                self.client.allow_insecure_loopback,
+            )?;
+            if let Some(previous) = &cached
+                && previous.final_url != inspect_url
+                && previous.final_url != inspection.final_url
+            {
+                self.client
+                    .inspect_cache
+                    .delete(&previous.final_url)
+                    .await?;
+            }
+            // CORE-CACHE-007 keys the entry by the requested advertised URL and updates that key
+            // to the final URL once a redirect is accepted, so the document is reachable under
+            // either spelling. `no-store` removes both.
+            let mut keys = vec![inspect_url.clone()];
+            if inspection.final_url != inspect_url {
+                keys.push(inspection.final_url.clone());
+            }
+            for key in keys {
+                if !cache_storable(&entry.headers) {
+                    self.client.inspect_cache.delete(&key).await?;
+                } else {
+                    self.client.inspect_cache.save(&key, entry.clone()).await?;
+                }
             }
             return Ok(inspection);
         }
@@ -145,10 +170,11 @@ impl Session {
 
 fn parse_response(
     session: &Session,
-    inspect_url: &Url,
     current: &Url,
     response: aep_core::HttpResponse,
-) -> Result<Inspection, AgentError> {
+    requested_at: OffsetDateTime,
+    received_at: OffsetDateTime,
+) -> Result<InspectCacheEntry, AgentError> {
     let status = response.status.as_u16();
     if !response.status.is_success() {
         return Err(inspect_error(
@@ -157,7 +183,7 @@ fn parse_response(
             Some(status),
         ));
     }
-    if !media_type_matches(response.headers.get(header::CONTENT_TYPE), MEDIA_TYPE) {
+    if !media_type_matches(&response.headers, MEDIA_TYPE) {
         return Err(inspect_error(
             InspectErrorCode::InvalidMediaType,
             "response media type is invalid",
@@ -179,17 +205,12 @@ fn parse_response(
         };
         inspect_error(code, error.to_string(), Some(status))
     })?;
-    let inspection = Inspection {
-        cache_control: header_string(&response.headers, header::CACHE_CONTROL),
+    Ok(InspectCacheEntry {
+        cached_at: received_at,
         document,
-        etag: header_string(&response.headers, header::ETAG),
         final_url: current.clone(),
-        inspect_url: inspect_url.clone(),
-        last_modified: header_string(&response.headers, header::LAST_MODIFIED),
-        service_url: session.service_url.clone(),
-    };
-    validate_service_identity(&inspection, session.client.allow_insecure_loopback)?;
-    Ok(inspection)
+        headers: cache_headers(&response.headers, None, requested_at, received_at),
+    })
 }
 
 fn inspection_from_cache(
@@ -199,12 +220,12 @@ fn inspection_from_cache(
     allow_insecure_loopback: bool,
 ) -> Result<Inspection, AgentError> {
     let inspection = Inspection {
-        cache_control: entry.cache_control,
+        cache_control: header_string(&entry.headers, header::CACHE_CONTROL),
         document: entry.document,
-        etag: entry.etag,
+        etag: header_string(&entry.headers, header::ETAG),
         final_url: entry.final_url,
         inspect_url: inspect_url.clone(),
-        last_modified: entry.last_modified,
+        last_modified: header_string(&entry.headers, header::LAST_MODIFIED),
         service_url: service_url.clone(),
     };
     validate_service_identity(&inspection, allow_insecure_loopback)?;
@@ -246,57 +267,6 @@ fn validate_service_identity(
     Ok(())
 }
 
-fn cache_fresh(entry: &InspectCacheEntry, now: OffsetDateTime) -> bool {
-    if directive(entry.cache_control.as_deref(), "no-cache").is_some()
-        || directive(entry.cache_control.as_deref(), "no-store").is_some()
-    {
-        return false;
-    }
-    let freshness = match directive(entry.cache_control.as_deref(), "max-age") {
-        Some(value) => match value.parse::<u64>() {
-            Ok(value) => Duration::from_secs(value),
-            Err(_) => return false,
-        },
-        None => DEFAULT_INSPECT_FRESHNESS,
-    };
-    let Ok(freshness) = time::Duration::try_from(freshness) else {
-        return false;
-    };
-    entry
-        .cached_at
-        .checked_add(freshness)
-        .is_some_and(|expires| expires > now)
-}
-
-fn directive<'a>(value: Option<&'a str>, name: &str) -> Option<&'a str> {
-    value?.split(',').find_map(|part| {
-        let mut fields = part.trim().splitn(2, '=');
-        let field = fields.next()?;
-        field
-            .eq_ignore_ascii_case(name)
-            .then(|| fields.next().unwrap_or("").trim_matches('"'))
-    })
-}
-
-fn merge_cache_headers(entry: &mut InspectCacheEntry, headers: &HeaderMap) {
-    if let Some(value) = header_string(headers, header::CACHE_CONTROL) {
-        entry.cache_control = Some(value);
-    }
-    if let Some(value) = header_string(headers, header::ETAG) {
-        entry.etag = Some(value);
-    }
-    if let Some(value) = header_string(headers, header::LAST_MODIFIED) {
-        entry.last_modified = Some(value);
-    }
-}
-
-fn media_type_matches(value: Option<&HeaderValue>, expected: &str) -> bool {
-    value
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.split(';').next())
-        .is_some_and(|value| value.trim().eq_ignore_ascii_case(expected))
-}
-
 fn safe_target(target: &Url, reference: &Url) -> bool {
     target.username().is_empty()
         && target.password().is_none()
@@ -314,17 +284,6 @@ fn is_redirect(status: StatusCode) -> bool {
             | StatusCode::TEMPORARY_REDIRECT
             | StatusCode::PERMANENT_REDIRECT
     )
-}
-
-fn header_string(headers: &HeaderMap, name: header::HeaderName) -> Option<String> {
-    headers
-        .get(name)
-        .and_then(|value| value.to_str().ok())
-        .map(str::to_owned)
-}
-
-fn header_value(value: &str) -> Option<HeaderValue> {
-    HeaderValue::from_str(value).ok()
 }
 
 fn inspect_error(

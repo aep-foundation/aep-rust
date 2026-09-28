@@ -391,12 +391,52 @@ pub trait Clock: Send + Sync {
     fn now(&self) -> OffsetDateTime;
 }
 
+/// The bounds a Service places on the Claim Values it will accept.
+///
+/// CLM-SEC-006 requires a Service to bound the encoded size, string length, object depth, and
+/// member count of the claim document under local policy. These are the defaults; a Service that
+/// needs different ones sets them on [`ServiceOptions`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ClaimValueLimits {
+    pub maximum_encoded_bytes: usize,
+    pub maximum_member_count: usize,
+    pub maximum_object_depth: usize,
+    pub maximum_string_length: usize,
+}
+
+impl Default for ClaimValueLimits {
+    fn default() -> Self {
+        Self {
+            maximum_encoded_bytes: 65_536,
+            maximum_member_count: 128,
+            maximum_object_depth: 8,
+            maximum_string_length: 4_096,
+        }
+    }
+}
+
+impl ClaimValueLimits {
+    pub(crate) fn validate(self) -> Result<Self, ServiceError> {
+        if self.maximum_encoded_bytes == 0
+            || self.maximum_member_count == 0
+            || self.maximum_object_depth == 0
+            || self.maximum_string_length == 0
+        {
+            return Err(ServiceError::InvalidConfiguration(
+                "claim value limits must be positive".to_owned(),
+            ));
+        }
+        Ok(self)
+    }
+}
+
 #[derive(Clone)]
 pub struct ServiceOptions {
     pub allow_insecure_loopback: bool,
     pub authentication_methods: Vec<AuthenticationMethod>,
     pub clock: Option<Arc<dyn Clock>>,
     pub claims: ClaimsConfiguration,
+    pub claim_value_limits: ClaimValueLimits,
     pub endpoint_base: Option<String>,
     pub enrollment_policy: Option<Arc<dyn EnrollmentPolicy>>,
     pub enrollment_store: Option<Arc<dyn EnrollmentStore>>,
@@ -420,6 +460,7 @@ impl ServiceOptions {
             authentication_methods: Vec::new(),
             clock: None,
             claims: ClaimsConfiguration::default(),
+            claim_value_limits: ClaimValueLimits::default(),
             endpoint_base: None,
             enrollment_policy: None,
             enrollment_store: None,
@@ -495,6 +536,7 @@ pub enum ProtectedResourceAuthentication {
 #[derive(Clone)]
 pub(crate) struct ServiceConfiguration {
     pub authentication_methods: Vec<AuthenticationMethod>,
+    pub claim_value_limits: ClaimValueLimits,
     pub claims: ClaimsConfiguration,
     pub grant_handlers: BTreeMap<String, Arc<dyn GrantTypeHandler>>,
     pub inspect_document: InspectDocument,
@@ -505,17 +547,13 @@ pub(crate) struct ServiceConfiguration {
 }
 
 pub(crate) fn problem(code: ErrorCode, status: u16) -> ServiceResponse {
-    let title = code
-        .as_str()
-        .split('_')
-        .map(|part| {
-            let mut characters = part.chars();
-            characters.next().map_or_else(String::new, |first| {
-                first.to_uppercase().collect::<String>() + characters.as_str()
-            })
-        })
-        .collect::<Vec<_>>()
-        .join(" ");
+    // The registry spells each code in lower snake case; the published titles are the same words
+    // as one sentence, so only the first is capitalised.
+    let mut characters = code.as_str().replace('_', " ").into_bytes();
+    if let Some(first) = characters.first_mut() {
+        first.make_ascii_uppercase();
+    }
+    let title = String::from_utf8(characters).unwrap_or_else(|_| code.as_str().to_owned());
     let body = ResponseBody::Problem(aep_core::new_problem_details(
         code,
         title,

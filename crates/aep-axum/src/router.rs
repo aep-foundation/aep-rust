@@ -6,10 +6,15 @@ use axum::Router;
 
 use crate::TowerError;
 
+/// Mounts the AEP command endpoints of a Service on a new `Router`.
+///
+/// Command paths are percent-encoded literals, not route templates.
 pub fn router(service: Arc<Service>, maximum_request_bytes: usize) -> Result<Router, TowerError> {
     let commands = CommandService::new(service, maximum_request_bytes)?;
     let paths = commands.paths().clone();
     Ok(Router::new()
+        // ':' and '*' remain literal characters, not legacy capture syntax.
+        .without_v07_checks()
         .route_service(&paths.inspect, commands.clone())
         .route_service(&paths.enroll, commands.clone())
         .route_service(&paths.status, commands.clone())

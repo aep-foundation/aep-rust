@@ -176,8 +176,21 @@ pub(crate) fn select_authorization(headers: &HeaderMap) -> Result<SelectedAuthor
     let Some(value) = standard_values.first() else {
         return Ok(SelectedAuthorization::Unauthenticated);
     };
+    let recognized = value
+        .as_bytes()
+        .split(|byte| matches!(byte, b' ' | b'\t'))
+        .next()
+        .is_some_and(|scheme| {
+            [b"aep".as_slice(), b"bearer".as_slice(), b"basic".as_slice()]
+                .iter()
+                .any(|known| scheme.eq_ignore_ascii_case(known))
+        });
     let Ok(value) = value.to_str() else {
-        return Ok(SelectedAuthorization::Unrelated);
+        return if recognized {
+            Err(())
+        } else {
+            Ok(SelectedAuthorization::Unrelated)
+        };
     };
     match parse_protected_resource_authorization(value, AuthorizationCarrier::Standard) {
         Ok(parsed) if parsed.scheme == CredentialScheme::Aep => {
@@ -189,6 +202,7 @@ pub(crate) fn select_authorization(headers: &HeaderMap) -> Result<SelectedAuthor
         Ok(parsed) if parsed.scheme == CredentialScheme::Basic => {
             Ok(SelectedAuthorization::Session(AuthenticationMethod::Basic))
         }
+        Err(_) if recognized => Err(()),
         Ok(_) | Err(_) => Ok(SelectedAuthorization::Unrelated),
     }
 }

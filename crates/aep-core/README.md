@@ -45,7 +45,8 @@ OpenAPI AEP security metadata.
 algorithms. `decode_jwt_unverified` exposes the JOSE header before verification so a Service can
 select the advertised algorithm and resolve the `kid`. `did_web_document_url` and
 `resolve_did_web_public_key` implement the `did:web` resolution rules, including the HTTPS default,
-the one-mebibyte document limit, exact verification-method selection, and redirect rejection.
+the one-mebibyte document limit, matching document identity, exact verification-method selection,
+and redirect rejection.
 
 Keys use AEP-owned types rather than exposing the underlying JSON Web Token library. Ed25519 seeds,
 PKCS #8 PEM private keys, raw Ed25519 public keys, ES256 private scalars, PKCS #8 PEM private keys,

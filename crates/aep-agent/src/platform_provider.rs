@@ -1,4 +1,9 @@
-use std::{collections::BTreeMap, fmt, sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt,
+    sync::Arc,
+    time::Duration,
+};
 
 use aep_core::{
     ClientAssertionClaims, DidWebDocumentUrlOptions, HttpRequest, HttpResponse, HttpTransport,
@@ -13,6 +18,7 @@ use time::OffsetDateTime;
 use url::Url;
 use uuid::Uuid;
 
+use crate::http_response::{cache_fresh, cache_headers, cache_storable, media_type_matches};
 use crate::{
     AgentError, AgentIdentity, AssertionSigner, Clock, IdentityProvider, IdentityRequest,
     ReqwestTransport, SystemClock, is_loopback, same_origin,
@@ -20,7 +26,11 @@ use crate::{
 
 const PLATFORM_WELL_KNOWN_PATH: &str = "/.well-known/aep-platform";
 const MAXIMUM_REDIRECTS: usize = 5;
-const DEFAULT_DISCOVERY_FRESHNESS: Duration = Duration::from_secs(300);
+/// How many `202 Accepted` Sign stages one assertion may go through before the Agent gives up.
+///
+/// `retry_after_seconds` paces polling but sets no total deadline, so the Agent carries its own
+/// bound and fails closed rather than letting a Platform that never completes hold the caller.
+const MAXIMUM_PENDING_SIGN_STAGES: usize = 8;
 
 #[async_trait]
 pub trait PlatformAuthenticationHeaders: Send + Sync {
@@ -189,7 +199,7 @@ impl PlatformIdentityProvider {
         let mut cache = self.discovery.lock().await;
         if let Some(entry) = cache
             .as_ref()
-            .filter(|entry| discovery_fresh(entry, self.clock.now()))
+            .filter(|entry| cache_fresh(&entry.headers, entry.cached_at, self.clock.now()))
         {
             return Ok(entry.clone());
         }
@@ -201,16 +211,18 @@ impl PlatformIdentityProvider {
             let mut headers = HeaderMap::new();
             headers.insert(header::ACCEPT, HeaderValue::from_static(MEDIA_TYPE));
             if let Some(entry) = cache.as_ref() {
-                if let Some(value) = entry.etag.as_deref().and_then(header_value) {
-                    headers.insert(header::IF_NONE_MATCH, value);
+                if let Some(value) = entry.headers.get(header::ETAG) {
+                    headers.insert(header::IF_NONE_MATCH, value.clone());
                 }
-                if let Some(value) = entry.last_modified.as_deref().and_then(header_value) {
-                    headers.insert(header::IF_MODIFIED_SINCE, value);
+                if let Some(value) = entry.headers.get(header::LAST_MODIFIED) {
+                    headers.insert(header::IF_MODIFIED_SINCE, value.clone());
                 }
             }
+            let requested_at = self.clock.now();
             let response = self
                 .send(Method::GET, current.clone(), headers, Vec::new())
                 .await?;
+            let received_at = self.clock.now();
             if response.final_url != current {
                 return Err(AgentError::Transport(
                     "AEP Platform transport followed a discovery redirect".to_owned(),
@@ -250,14 +262,19 @@ impl PlatformIdentityProvider {
                         "AEP Platform discovery returned 304 without a cached document".to_owned(),
                     )
                 })?;
-                entry.cached_at = self.clock.now();
+                entry.cached_at = received_at;
                 entry.final_url = current;
-                merge_cache_headers(&mut entry, &response.headers);
+                entry.headers = cache_headers(
+                    &response.headers,
+                    Some(&entry.headers),
+                    requested_at,
+                    received_at,
+                );
                 entry
             } else {
-                self.parse_discovery(response, current)?
+                self.parse_discovery(response, current, requested_at, received_at)?
             };
-            if cache_directive(entry.cache_control.as_deref(), "no-store").is_some() {
+            if !cache_storable(&entry.headers) {
                 *cache = None;
             } else {
                 *cache = Some(entry.clone());
@@ -271,6 +288,8 @@ impl PlatformIdentityProvider {
         &self,
         response: HttpResponse,
         final_url: Url,
+        requested_at: OffsetDateTime,
+        received_at: OffsetDateTime,
     ) -> Result<DiscoveryCacheEntry, AgentError> {
         if !response.status.is_success() {
             return Err(AgentError::Transport(format!(
@@ -285,12 +304,10 @@ impl PlatformIdentityProvider {
         })?;
         validate_discovery(&document, self.allow_insecure_loopback)?;
         Ok(DiscoveryCacheEntry {
-            cache_control: header_string(&response.headers, header::CACHE_CONTROL),
-            cached_at: self.clock.now(),
+            cached_at: received_at,
             document,
-            etag: header_string(&response.headers, header::ETAG),
             final_url,
-            last_modified: header_string(&response.headers, header::LAST_MODIFIED),
+            headers: cache_headers(&response.headers, None, requested_at, received_at),
         })
     }
 
@@ -548,12 +565,18 @@ impl AssertionSigner for PlatformAssertionSigner {
             Some(provider) => provider.context(&self.identity, claims).await?,
             None => BTreeMap::new(),
         };
-        let mut previous_key = None;
+        let mut used_keys = BTreeSet::new();
         loop {
             let key = self.provider.idempotency_key()?;
-            if previous_key.as_ref() == Some(&key) {
+            if !used_keys.insert(key.clone()) {
                 return Err(AgentError::InvalidConfiguration(
                     "AEP Platform pending Sign stages require distinct idempotency keys".to_owned(),
+                ));
+            }
+            if used_keys.len() > MAXIMUM_PENDING_SIGN_STAGES {
+                return Err(AgentError::Identity(
+                    "AEP Platform signing did not complete within the supported number of stages"
+                        .to_owned(),
                 ));
             }
             let result = self.sign_once(claims, context, &key).await?;
@@ -583,7 +606,6 @@ impl AssertionSigner for PlatformAssertionSigner {
                     pending: Box::new(pending),
                 });
             };
-            previous_key = Some(key);
             context = resolver.resolve(pending).await?;
         }
     }
@@ -718,12 +740,10 @@ struct PlatformCommandResult<T> {
 
 #[derive(Clone)]
 struct DiscoveryCacheEntry {
-    cache_control: Option<String>,
     cached_at: OffsetDateTime,
     document: PlatformDiscovery,
-    etag: Option<String>,
     final_url: Url,
-    last_modified: Option<String>,
+    headers: HeaderMap,
 }
 
 fn platform_url(value: &str, allow_insecure_loopback: bool) -> Result<Url, AgentError> {
@@ -996,50 +1016,6 @@ fn encode_path(value: &str) -> String {
     percent_encoding::utf8_percent_encode(value, percent_encoding::NON_ALPHANUMERIC).to_string()
 }
 
-fn discovery_fresh(entry: &DiscoveryCacheEntry, now: OffsetDateTime) -> bool {
-    if cache_directive(entry.cache_control.as_deref(), "no-cache").is_some()
-        || cache_directive(entry.cache_control.as_deref(), "no-store").is_some()
-    {
-        return false;
-    }
-    let freshness = match cache_directive(entry.cache_control.as_deref(), "max-age") {
-        Some(value) => match value.parse::<u64>() {
-            Ok(value) => Duration::from_secs(value),
-            Err(_) => return false,
-        },
-        None => DEFAULT_DISCOVERY_FRESHNESS,
-    };
-    let Ok(freshness) = time::Duration::try_from(freshness) else {
-        return false;
-    };
-    entry
-        .cached_at
-        .checked_add(freshness)
-        .is_some_and(|expires| expires > now)
-}
-
-fn cache_directive<'a>(value: Option<&'a str>, name: &str) -> Option<&'a str> {
-    value?.split(',').find_map(|part| {
-        let mut fields = part.trim().splitn(2, '=');
-        let field = fields.next()?;
-        field
-            .eq_ignore_ascii_case(name)
-            .then(|| fields.next().unwrap_or("").trim_matches('"'))
-    })
-}
-
-fn merge_cache_headers(entry: &mut DiscoveryCacheEntry, headers: &HeaderMap) {
-    if let Some(value) = header_string(headers, header::CACHE_CONTROL) {
-        entry.cache_control = Some(value);
-    }
-    if let Some(value) = header_string(headers, header::ETAG) {
-        entry.etag = Some(value);
-    }
-    if let Some(value) = header_string(headers, header::LAST_MODIFIED) {
-        entry.last_modified = Some(value);
-    }
-}
-
 fn validate_media_type(headers: &HeaderMap, expected: &str, kind: &str) -> Result<(), AgentError> {
     if media_type_matches(headers, expected) {
         return Ok(());
@@ -1047,14 +1023,6 @@ fn validate_media_type(headers: &HeaderMap, expected: &str, kind: &str) -> Resul
     Err(AgentError::Transport(format!(
         "AEP Platform {kind} response media type is invalid"
     )))
-}
-
-fn media_type_matches(headers: &HeaderMap, expected: &str) -> bool {
-    headers
-        .get(header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.split(';').next())
-        .is_some_and(|value| value.trim().eq_ignore_ascii_case(expected))
 }
 
 fn safe_discovery_target(target: &Url, reference: &Url) -> bool {
@@ -1074,17 +1042,6 @@ fn is_redirect(status: StatusCode) -> bool {
             | StatusCode::TEMPORARY_REDIRECT
             | StatusCode::PERMANENT_REDIRECT
     )
-}
-
-fn header_string(headers: &HeaderMap, name: header::HeaderName) -> Option<String> {
-    headers
-        .get(name)
-        .and_then(|value| value.to_str().ok())
-        .map(str::to_owned)
-}
-
-fn header_value(value: &str) -> Option<HeaderValue> {
-    HeaderValue::from_str(value).ok()
 }
 
 #[cfg(test)]

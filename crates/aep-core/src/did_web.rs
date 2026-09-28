@@ -38,16 +38,15 @@ pub fn did_web_document_url_with_options(
         .filter(|host| !host.is_empty())
         .ok_or_else(|| CoreError::Invalid(format!("invalid did:web identifier: {did}")))?;
     let host = decode_component(encoded_host, "did:web host")?;
-    let authority = Url::parse(&format!("https://{host}"))?;
-    if authority.host_str().is_none()
-        || !authority.username().is_empty()
-        || authority.password().is_some()
-        || authority.path() != "/"
-        || authority.query().is_some()
-        || authority.fragment().is_some()
-    {
+    // The host is checked before the URL parser sees it. The parser silently drops tabs and line
+    // breaks and reinterprets user information, a path, a query, or a fragment, so a value it
+    // rewrote would resolve to a document the identifier never named.
+    if !is_did_web_host(&host) {
         return Err(CoreError::Invalid(format!("invalid did:web host: {host}")));
     }
+    // Parsing the authority on its own normalises the host for the loopback comparison below and
+    // rejects a bracketed literal that is not a well-formed IPv6 address.
+    let authority = Url::parse(&format!("https://{host}"))?;
     let scheme = if options.allow_insecure_loopback
         && authority
             .host_str()
@@ -57,13 +56,25 @@ pub fn did_web_document_url_with_options(
     } else {
         "https"
     };
-    let decoded_path = parts
-        .map(|part| decode_component(part, "did:web path"))
+    let path_parts = parts
+        .map(|part| {
+            let segment = decode_component(part, "did:web path")?;
+            // DWB-RES-001 maps `did:web:<host>:<path>` onto `https://<host>/<path>/did.json`. A
+            // segment decoding to a separator, a query, a fragment, or a dot segment leaves that
+            // path, so the identifier would resolve to a different document than it names.
+            if !is_did_web_path_segment(&segment) {
+                return Err(CoreError::Invalid(format!(
+                    "invalid did:web path segment: {did}"
+                )));
+            }
+            // Preserve escapes so URL parsing cannot decode a second time into a dot segment.
+            Ok(part)
+        })
         .collect::<Result<Vec<_>, _>>()?;
-    let path = if decoded_path.is_empty() {
+    let path = if path_parts.is_empty() {
         "/.well-known/did.json".to_owned()
     } else {
-        format!("/{}/did.json", decoded_path.join("/"))
+        format!("/{}/did.json", path_parts.join("/"))
     };
     Url::parse(&format!("{scheme}://{host}{path}")).map_err(CoreError::from)
 }
@@ -122,6 +133,11 @@ pub async fn resolve_did_web_public_key(
         ));
     }
     let document = serde_json::from_slice::<DidDocument>(&response.body)?;
+    if document.id != options.did {
+        return Err(CoreError::Invalid(
+            "did:web document does not identify the requested DID".to_owned(),
+        ));
+    }
     let method = document
         .verification_method
         .into_iter()
@@ -181,7 +197,73 @@ fn validate_jwk_metadata(
     Ok(())
 }
 
+/// A host, optionally with a port, as a `did:web` identifier percent-decodes to.
+fn is_did_web_host(value: &str) -> bool {
+    let (name, port) = if value.starts_with('[') {
+        // An IPv6 literal carries colons of its own, so only what follows the closing bracket can
+        // be a port.
+        match value.find(']') {
+            Some(end) => match &value[end + 1..] {
+                "" => (&value[..=end], None),
+                rest => match rest.strip_prefix(':') {
+                    Some(port) => (&value[..=end], Some(port)),
+                    None => return false,
+                },
+            },
+            None => return false,
+        }
+    } else {
+        match value.rsplit_once(':') {
+            Some((name, port)) => (name, Some(port)),
+            None => (value, None),
+        }
+    };
+    if let Some(port) = port
+        && (port.is_empty() || port.len() > 5 || !port.bytes().all(|byte| byte.is_ascii_digit()))
+    {
+        return false;
+    }
+    if let Some(literal) = name
+        .strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+    {
+        return !literal.is_empty()
+            && literal
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() || byte == b':' || byte == b'.');
+    }
+    !name.is_empty()
+        && name.split('.').all(|label| {
+            !label.is_empty()
+                && label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        })
+}
+
+/// One path segment of a `did:web` identifier after percent-decoding.
+fn is_did_web_path_segment(value: &str) -> bool {
+    const EXTRA: &[u8] = b"-._~!$&'()*+,;=:@%";
+    !value.is_empty()
+        && value != "."
+        && value != ".."
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || EXTRA.contains(&byte))
+}
+
 fn decode_component(value: &str, label: &str) -> Result<String, CoreError> {
+    let bytes = value.as_bytes();
+    for (index, byte) in bytes.iter().enumerate() {
+        if *byte == b'%'
+            && (!bytes.get(index + 1).is_some_and(u8::is_ascii_hexdigit)
+                || !bytes.get(index + 2).is_some_and(u8::is_ascii_hexdigit))
+        {
+            return Err(CoreError::Invalid(format!(
+                "invalid percent escape in {label}"
+            )));
+        }
+    }
     percent_decode_str(value)
         .decode_utf8()
         .map(String::from)
@@ -190,6 +272,7 @@ fn decode_component(value: &str, label: &str) -> Result<String, CoreError> {
 
 #[derive(Deserialize)]
 struct DidDocument {
+    id: String,
     #[serde(default, rename = "verificationMethod")]
     verification_method: Vec<VerificationMethod>,
 }
@@ -224,6 +307,7 @@ mod tests {
                 final_url: request.url,
                 headers: HeaderMap::new(),
                 body: br#"{
+                    "id": "did:web:agent.example",
                     "verificationMethod": [{
                         "id": "did:web:agent.example#key-1",
                         "publicKeyJwk": {

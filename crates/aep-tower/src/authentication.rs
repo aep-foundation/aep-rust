@@ -88,13 +88,12 @@ where
         let options = self.options.clone();
         let service = self.service.clone();
         async move {
-            let authentication = match build_protected_resource_request(&options, &request) {
-                Ok(request) => service
-                    .authenticate_protected_resource(request)
-                    .await
-                    .map_err(TowerError::from),
-                Err(error) => Err(error),
-            };
+            let authentication = service
+                .authenticate_protected_resource(build_protected_resource_request(
+                    &options, &request,
+                ))
+                .await
+                .map_err(TowerError::from);
             match authentication {
                 Ok(ProtectedResourceAuthentication::Authenticated(principal)) => {
                     request.extensions_mut().insert(principal);
@@ -118,16 +117,16 @@ pub fn protected_resource_request<B>(
     request: &Request<B>,
 ) -> Result<ProtectedResourceRequest, TowerError> {
     validate_origin(&options.origin, options.allow_insecure_loopback)?;
-    build_protected_resource_request(options, request)
+    Ok(build_protected_resource_request(options, request))
 }
 
 fn build_protected_resource_request<B>(
     options: &AuthenticationOptions,
     request: &Request<B>,
-) -> Result<ProtectedResourceRequest, TowerError> {
-    Ok(ProtectedResourceRequest {
+) -> ProtectedResourceRequest {
+    ProtectedResourceRequest {
         headers: request.headers().clone(),
         method: request.method().clone(),
-        url: request_url(&options.origin, request.uri())?,
-    })
+        url: request_url(&options.origin, request.uri()),
+    }
 }

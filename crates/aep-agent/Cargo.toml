@@ -20,6 +20,7 @@ base64.workspace = true
 futures.workspace = true
 futures-timer.workspace = true
 http.workspace = true
+httpdate.workspace = true
 percent-encoding.workspace = true
 reqwest.workspace = true
 serde.workspace = true

@@ -15,6 +15,9 @@ use crate::{
 };
 
 type ScopeLock = Arc<futures::lock::Mutex<()>>;
+
+/// How long a replayable idempotency result stays available (PLT-IDP-004).
+const RETENTION: Duration = Duration::from_secs(3600);
 type IdempotencyKey = (String, String);
 
 #[derive(Default)]
@@ -224,6 +227,8 @@ impl IdentityStore for MemoryIdentityStore {
 struct IdempotencyRecord {
     input: IdempotencyInput,
     response: StoredResponse,
+    // Retention starts at completion, independently of caller-supplied response metadata.
+    stored_at: OffsetDateTime,
 }
 
 pub struct MemoryIdempotencyStore {
@@ -290,9 +295,9 @@ impl IdempotencyStore for MemoryIdempotencyStore {
             let now = self.clock.now();
             let existing = {
                 let mut records = self.records.lock().map_err(lock_error)?;
-                records.retain(|_, record| {
-                    record.response.created_at + Duration::from_secs(3600) > now
-                });
+                // PLT-IDP-004 retains the replayable result for at least one hour, so a record
+                // is still usable at exactly one hour old.
+                records.retain(|_, record| record.stored_at + RETENTION >= now);
                 records.get(&key).cloned()
             };
             if let Some(existing) = existing {
@@ -305,14 +310,16 @@ impl IdempotencyStore for MemoryIdempotencyStore {
                 }
             } else {
                 let mut response = operation().await?;
+                let stored_at = self.clock.now();
                 if response.created_at == OffsetDateTime::UNIX_EPOCH {
-                    response.created_at = now;
+                    response.created_at = stored_at;
                 }
                 self.records.lock().map_err(lock_error)?.insert(
                     key.clone(),
                     IdempotencyRecord {
                         input,
                         response: response.clone(),
+                        stored_at,
                     },
                 );
                 Ok(IdempotencyResult::Created(response))

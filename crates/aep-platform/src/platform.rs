@@ -36,6 +36,8 @@ pub struct Platform {
     did_path_prefix: String,
     did_url_template: String,
     discovery: DiscoveryDocument,
+    discovery_etag: String,
+    discovery_last_modified: String,
     hosted_verification: bool,
     identifier: Arc<dyn Fn() -> Result<String, PlatformError> + Send + Sync>,
     idempotency_store: Arc<dyn IdempotencyStore>,
@@ -51,7 +53,20 @@ pub struct Platform {
 
 impl Platform {
     pub fn new(options: PlatformOptions) -> Result<Arc<Self>, PlatformError> {
-        create_service_scoped_agent_did(&options.did_host, &options.did_path_prefix, "validation")?;
+        let probe_did = create_service_scoped_agent_did(
+            &options.did_host,
+            &options.did_path_prefix,
+            "validation",
+        )?;
+        // DWB-RES-001 resolves a minted DID to one document URL, and PLT-DISC-006 advertises where
+        // this Platform publishes that document. A Platform whose two answers disagree issues
+        // identities no Service can resolve, so the pair is checked once, here.
+        let probe_url = render_did_url(&options.did_url_template, "validation")?;
+        if aep_core::did_web_document_url(&probe_did)?.as_str() != probe_url {
+            return Err(PlatformError::InvalidConfiguration(
+                "AEP Platform DID URL template does not resolve the Agent DIDs it mints".to_owned(),
+            ));
+        }
         validate_signing_algorithms(&options.signing_algorithms)?;
         validate_lifetime(
             "maximum",
@@ -76,6 +91,10 @@ impl Platform {
             options.default_lifetime,
         )?;
         let clock = options.clock.unwrap_or_else(|| Arc::new(SystemClock));
+        // The document is built once and never changes, so its validators are derived once: a
+        // strong entity tag over the representation, and the moment this Platform published it.
+        let discovery_etag = format!("\"{}\"", hex_digest(&serde_json::to_vec(&discovery)?));
+        let discovery_last_modified = http_date(clock.now());
         let idempotency_store = options
             .idempotency_store
             .unwrap_or_else(|| Arc::new(MemoryIdempotencyStore::new(clock.clone())));
@@ -90,6 +109,8 @@ impl Platform {
             did_path_prefix: options.did_path_prefix,
             did_url_template: options.did_url_template,
             discovery,
+            discovery_etag,
+            discovery_last_modified,
             hosted_verification: options.hosted_verification,
             identifier: options
                 .identifier
@@ -116,6 +137,14 @@ impl Platform {
             header::CACHE_CONTROL,
             HeaderValue::from_static("max-age=300"),
         );
+        // PLT-DISC-012: the validators travel with the freshness policy, so a client can
+        // revalidate this representation instead of re-fetching it.
+        if let Ok(value) = HeaderValue::from_str(&self.discovery_etag) {
+            response.headers.insert(header::ETAG, value);
+        }
+        if let Ok(value) = HeaderValue::from_str(&self.discovery_last_modified) {
+            response.headers.insert(header::LAST_MODIFIED, value);
+        }
         response
     }
 
@@ -216,6 +245,18 @@ impl Platform {
         if !is_did(&request.service_did) {
             return Ok(problem(400, ErrorCode::InvalidRequest));
         }
+        if !self
+            .authorizer
+            .authorize(
+                &AuthorizationRequest::Provision {
+                    request: request.clone(),
+                },
+                &context,
+            )
+            .await?
+        {
+            return Ok(problem(404, ErrorCode::NotRecognized));
+        }
         let material = request.clone();
         let platform = self.clone();
         self.execute_idempotent(
@@ -223,18 +264,6 @@ impl Platform {
             &material,
             context.clone(),
             move || async move {
-                let authorized = platform
-                    .authorizer
-                    .authorize(
-                        &AuthorizationRequest::Provision {
-                            request: request.clone(),
-                        },
-                        &context,
-                    )
-                    .await?;
-                if !authorized {
-                    return Ok(problem(404, ErrorCode::NotRecognized));
-                }
                 if !platform
                     .service_did_resolver
                     .resolve(&request.service_did)
@@ -278,6 +307,20 @@ impl Platform {
             Ok(lifetime) => lifetime,
             Err(_) => return Ok(problem(400, ErrorCode::InvalidRequest)),
         };
+        let Some(identity) = self
+            .authorized_identity(agent_identity_id, &context, |identity| {
+                AuthorizationRequest::Sign {
+                    identity,
+                    request: request.clone(),
+                }
+            })
+            .await?
+        else {
+            return Ok(problem(404, ErrorCode::NotRecognized));
+        };
+        if identity.service_did != request.service_did {
+            return Ok(problem(404, ErrorCode::NotRecognized));
+        }
         #[derive(Serialize)]
         struct SignMaterial {
             agent_identity_id: String,
@@ -288,37 +331,24 @@ impl Platform {
             request: request.clone(),
         };
         let platform = self.clone();
-        let agent_identity_id = agent_identity_id.to_owned();
         self.execute_idempotent(
             IdempotentOperation::Sign,
             &material,
             context.clone(),
             move || async move {
-                let Some(identity) = platform
-                    .authorized_identity(&agent_identity_id, &context, |identity| {
-                        AuthorizationRequest::Sign {
-                            identity,
-                            request: request.clone(),
-                        }
-                    })
-                    .await?
-                else {
-                    return Ok(problem(404, ErrorCode::NotRecognized));
-                };
-                if identity.service_did != request.service_did {
-                    return Ok(problem(404, ErrorCode::NotRecognized));
-                }
-                if !platform
-                    .lifecycle_policy
-                    .can_sign(&identity, &context)
-                    .await?
+                // Authorization also guards stored results; lifecycle checks guard new work.
+                if identity.status != ManagedAgentStatus::Active
+                    || !platform
+                        .lifecycle_policy
+                        .can_sign(&identity, &context)
+                        .await?
                 {
                     return Ok(problem(403, lifecycle_error_code(identity.status)));
                 }
                 if let Some(handler) = &platform.sign_handler
                     && let Some(response) = handler.sign(&identity, &request, &context).await?
                 {
-                    validate_sign_response(&response, &identity, &request)?;
+                    validate_sign_response(&response, &identity, &request, lifetime)?;
                     return Ok(response);
                 }
                 let now = context.now.unwrap_or_else(|| platform.clock.now());
@@ -334,6 +364,11 @@ impl Platform {
                     resource: request.resource.clone(),
                     sub: identity.agent_did.clone(),
                 };
+                // PLT-SIGN-020: the claims are checked against the AEP core contract before the
+                // key store is asked to sign them, so a Platform never mints an assertion no
+                // Service would accept.
+                aep_core::validate_client_assertion_claims(&claims)
+                    .map_err(aep_core::CoreError::from)?;
                 let assertion = platform.key_store.sign(&identity, &claims).await?;
                 if assertion.is_empty() {
                     return Err(PlatformError::Handler(
@@ -415,62 +450,51 @@ impl Platform {
         {
             return Ok(problem(400, ErrorCode::InvalidRequest));
         }
+        let Some(identity) = self
+            .authorized_verification_identity(&request, &context)
+            .await?
+        else {
+            return Ok(unrecognized_verification(&request));
+        };
         let material = request.clone();
         let platform = self.clone();
         self.execute_idempotent(
             IdempotentOperation::HostedVerification,
             &material,
             context.clone(),
-            move || async move { platform.verify_assertion(request, context).await },
+            move || async move { platform.verify_assertion(request, context, identity).await },
         )
         .await
     }
 
-    async fn verify_assertion(
+    async fn authorized_verification_identity(
         &self,
-        request: VerificationRequest,
-        context: RequestContext,
-    ) -> Result<PlatformResponse<VerificationResponse>, PlatformError> {
-        let unrecognized = || {
-            success(
-                200,
-                VerificationResponse {
-                    additional: BTreeMap::new(),
-                    agent_did: None,
-                    agent_identity_id: None,
-                    op: None,
-                    reason: "not_recognized".to_owned(),
-                    service_did: request.service_did.clone(),
-                    status: None,
-                    verified: false,
-                },
-            )
-        };
+        request: &VerificationRequest,
+        context: &RequestContext,
+    ) -> Result<Option<IdentityRecord>, PlatformError> {
         let Ok(decoded) = decode_jwt_unverified(&request.client_assertion) else {
-            return Ok(unrecognized());
+            return Ok(None);
         };
         let Some(agent_did) = decoded
             .payload
             .get("iss")
             .and_then(serde_json::Value::as_str)
         else {
-            return Ok(unrecognized());
+            return Ok(None);
         };
         let subject = decoded
             .payload
             .get("sub")
             .and_then(serde_json::Value::as_str);
         if subject != Some(agent_did) || decoded.header.key_id.as_deref() != Some(agent_did) {
-            return Ok(unrecognized());
+            return Ok(None);
         }
         let Some(identity) = self.identity_store.find_by_agent_did(agent_did).await? else {
-            return Ok(unrecognized());
+            return Ok(None);
         };
-        if identity.service_did != request.service_did
-            || identity.principal != context.principal
-            || context.principal.is_empty()
-        {
-            return Ok(unrecognized());
+        // Verification callers may be authorized Services rather than the identity owner.
+        if identity.service_did != request.service_did || context.principal.is_empty() {
+            return Ok(None);
         }
         let authorized = self
             .authorizer
@@ -479,10 +503,21 @@ impl Platform {
                     identity: identity.clone(),
                     request: request.clone(),
                 },
-                &context,
+                context,
             )
             .await?;
-        if !authorized
+        Ok(authorized.then_some(identity))
+    }
+
+    async fn verify_assertion(
+        &self,
+        request: VerificationRequest,
+        context: RequestContext,
+        identity: IdentityRecord,
+    ) -> Result<PlatformResponse<VerificationResponse>, PlatformError> {
+        let unrecognized = || unrecognized_verification(&request);
+        let agent_did = &identity.agent_did;
+        if identity.status != ManagedAgentStatus::Active
             || !self
                 .lifecycle_policy
                 .can_verify(&identity, &context)
@@ -622,7 +657,7 @@ impl Platform {
         let Some(seconds) = &request.lifetime_seconds else {
             return Ok(self.default_lifetime);
         };
-        let seconds = seconds.parse::<u64>().map_err(|_| {
+        let seconds = decimal_seconds(seconds).ok_or_else(|| {
             PlatformError::InvalidConfiguration(
                 "AEP Platform lifetime_seconds must be a positive integer string".to_owned(),
             )
@@ -653,10 +688,7 @@ impl Platform {
         if idempotency_key.is_empty() || context.principal.is_empty() {
             return Ok(problem(400, ErrorCode::InvalidRequest));
         }
-        let request_hash = Sha256::digest(serde_json::to_vec(material)?)
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect();
+        let request_hash = hex_digest(&serde_json::to_vec(material)?);
         let result = self
             .idempotency_store
             .execute(
@@ -695,6 +727,24 @@ pub(crate) fn success<T>(status: u16, body: T) -> PlatformResponse<T> {
         headers,
         status,
     }
+}
+
+fn unrecognized_verification(
+    request: &VerificationRequest,
+) -> PlatformResponse<VerificationResponse> {
+    success(
+        200,
+        VerificationResponse {
+            additional: BTreeMap::new(),
+            agent_did: None,
+            agent_identity_id: None,
+            op: None,
+            reason: "not_recognized".to_owned(),
+            service_did: request.service_did.clone(),
+            status: None,
+            verified: false,
+        },
+    )
 }
 
 pub(crate) fn problem<T>(status: u16, code: ErrorCode) -> PlatformResponse<T> {
@@ -814,6 +864,7 @@ fn validate_sign_response(
     response: &PlatformResponse<SignResponse>,
     identity: &IdentityRecord,
     request: &SignRequest,
+    lifetime: Duration,
 ) -> Result<(), PlatformError> {
     match &response.body {
         ResponseBody::Problem(problem) => {
@@ -827,7 +878,7 @@ fn validate_sign_response(
             let retry = body
                 .retry_after_seconds
                 .as_deref()
-                .and_then(|value| value.parse::<u16>().ok());
+                .and_then(decimal_seconds);
             if response.status != 202
                 || !matches!(retry, Some(1..=300))
                 || response.headers.contains_key(header::RETRY_AFTER)
@@ -858,7 +909,10 @@ fn validate_sign_response(
                 || body.client_assertion.as_deref().is_none_or(str::is_empty)
                 || body.jti.as_deref() != Some(&request.jti)
                 || body.service_did.as_deref() != Some(&request.service_did)
-                || !matches!((issued_at, expires_at), (Some(issued), Some(expires)) if expires > issued && expires - issued <= aep_core::MAX_ASSERTION_LIFETIME)
+                // PLT-SIGN-010 caps the window at 300 seconds and PLT-SIGN-011 lets a Platform
+                // cap it lower; the effective lifetime already reflects both, and an Agent reads
+                // the window back to confirm it received the one it asked for.
+                || !matches!((issued_at, expires_at), (Some(issued), Some(expires)) if expires - issued == lifetime)
                 || body.retry_after_seconds.is_some()
             {
                 return Err(PlatformError::Handler(
@@ -868,6 +922,44 @@ fn validate_sign_response(
         }
     }
     Ok(())
+}
+
+fn hex_digest(value: &[u8]) -> String {
+    Sha256::digest(value)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// Renders an instant as the IMF-fixdate form RFC 9110 defines for `Last-Modified`.
+fn http_date(value: OffsetDateTime) -> String {
+    const DAYS: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let value = value.to_offset(time::UtcOffset::UTC);
+    format!(
+        "{}, {:02} {} {:04} {:02}:{:02}:{:02} GMT",
+        DAYS[usize::from(value.weekday().number_days_from_monday())],
+        value.day(),
+        MONTHS[usize::from(u8::from(value.month())) - 1],
+        value.year(),
+        value.hour(),
+        value.minute(),
+        value.second()
+    )
+}
+
+/// Parses one of the decimal-second strings the Platform schemas publish: digits only, no sign,
+/// no leading zero, and within the AEP assertion window.
+fn decimal_seconds(value: &str) -> Option<u64> {
+    if value.is_empty()
+        || !value.bytes().all(|byte| byte.is_ascii_digit())
+        || (value.len() > 1 && value.starts_with('0'))
+    {
+        return None;
+    }
+    value.parse().ok()
 }
 
 fn format_time(value: OffsetDateTime) -> Result<String, PlatformError> {

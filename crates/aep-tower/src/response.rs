@@ -33,28 +33,44 @@ pub(crate) fn json_response(
 }
 
 pub(crate) fn problem_response(code: ErrorCode, status: StatusCode) -> HttpResponse {
-    let title = code
-        .as_str()
-        .split('_')
-        .map(|part| {
-            let mut characters = part.chars();
-            characters.next().map_or_else(String::new, |first| {
-                first.to_uppercase().collect::<String>() + characters.as_str()
-            })
-        })
-        .collect::<Vec<_>>()
-        .join(" ");
+    // The registry spells each code in lower snake case and the published titles are the same
+    // words as one sentence, so only the first letter is capitalised. Title-casing every word
+    // would disagree with the Problem Details the Service itself emits for the same code.
+    let mut characters = code.as_str().replace('_', " ").into_bytes();
+    if let Some(first) = characters.first_mut() {
+        first.make_ascii_uppercase();
+    }
+    let title = String::from_utf8(characters).unwrap_or_else(|_| code.as_str().to_owned());
     let problem = new_problem_details(code, title, i64::from(status.as_u16()));
     json_response(status, aep_core::PROBLEM_MEDIA_TYPE, &problem)
         .unwrap_or_else(|_| empty_response(StatusCode::INTERNAL_SERVER_ERROR))
 }
 
-pub(crate) fn method_not_allowed(method: &'static str) -> HttpResponse {
-    let mut response = empty_response(StatusCode::METHOD_NOT_ALLOWED);
+/// Builds the `405` for a known AEP endpoint reached with the wrong method.
+///
+/// RFC 9110 Section 15.5.6 requires the `Allow` field to name every method the target resource
+/// supports, and the body is AEP Problem Details so that a caller parses this failure the same
+/// way it parses every other one.
+pub(crate) fn method_not_allowed(allow: &'static str) -> HttpResponse {
+    let mut response = problem_response(ErrorCode::InvalidRequest, StatusCode::METHOD_NOT_ALLOWED);
     response
         .headers_mut()
-        .insert(header::ALLOW, HeaderValue::from_static(method));
+        .insert(header::ALLOW, HeaderValue::from_static(allow));
     response
+}
+
+/// Reduces a `GET` response to the `HEAD` response for the same target.
+///
+/// RFC 9110 Section 9.3.2 makes `HEAD` identical to `GET` except that no content is sent, and the
+/// representation metadata is unchanged, so `Content-Length` keeps the length the `GET` response
+/// would have carried.
+pub(crate) fn head_response(response: HttpResponse) -> HttpResponse {
+    let (mut parts, body) = response.into_parts();
+    let length = http_body::Body::size_hint(&body).exact().unwrap_or(0);
+    parts
+        .headers
+        .insert(header::CONTENT_LENGTH, HeaderValue::from(length));
+    Response::from_parts(parts, Full::new(Bytes::new()))
 }
 
 pub(crate) fn empty_response(status: StatusCode) -> HttpResponse {

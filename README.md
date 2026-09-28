@@ -10,23 +10,24 @@ Service-issued credentials, and authenticated Agent access.
 
 ## Workspace
 
-| Goal                                               | Crate          | Guide                                      |
-| -------------------------------------------------- | -------------- | ------------------------------------------ |
-| Use protocol models, validation, and cryptography  | `aep-core`     | [Core](./crates/aep-core)                  |
-| Inspect, enroll with, and authenticate to Services | `aep-agent`    | [Agent](./crates/aep-agent)                |
-| Integrate enrollment into a Service                | `aep-service`  | [Service](./crates/aep-service)            |
-| Host managed Agent identities                      | `aep-platform` | [Platform](./crates/aep-platform)          |
-| Add reusable HTTP middleware to a Service          | `aep-tower`    | [Tower adapter](./crates/aep-tower)        |
-| Integrate a Service with Axum                      | `aep-axum`     | [Axum adapter](./crates/aep-axum)          |
+| Goal                                               | Crate          | Guide                               |
+| -------------------------------------------------- | -------------- | ----------------------------------- |
+| Use protocol models, validation, and cryptography  | `aep-core`     | [Core](./crates/aep-core)           |
+| Inspect, enroll with, and authenticate to Services | `aep-agent`    | [Agent](./crates/aep-agent)         |
+| Integrate enrollment into a Service                | `aep-service`  | [Service](./crates/aep-service)     |
+| Host managed Agent identities                      | `aep-platform` | [Platform](./crates/aep-platform)   |
+| Add reusable HTTP middleware to a Service          | `aep-tower`    | [Tower adapter](./crates/aep-tower) |
+| Integrate a Service with Axum                      | `aep-axum`     | [Axum adapter](./crates/aep-axum)   |
 
 The crates share one version. Core remains transport-independent. Service and Platform depend
 toward Core, while Agent composes Core with an injected identity provider without creating a
 dependency on Platform or Service implementations. Tower and Axum are optional adapters;
 integrators can use either, both, or neither.
 
-Public asynchronous APIs do not expose a particular runtime. Default networking uses a
-Rustls-backed HTTP client while transports, clocks, and delays remain injectable at integration
-boundaries.
+Public asynchronous APIs do not expose a particular runtime. The default Agent and Service
+HTTP transports use Reqwest with Rustls, require Tokio, and require TLS 1.3 or later for HTTPS.
+Applications using another runtime supply their own `HttpTransport`. Clocks and delays also
+remain injectable. The Core and Platform engines do not select a networking runtime.
 
 ## Installation
 
@@ -92,6 +93,30 @@ make conformance
 ```
 
 The harness writes machine-readable reports to `.conformance/reports/`.
+
+The Agent's protected-resource redirect vector exercises `Session::authentication`: it checks
+fresh JWT resource binding, both AEP header carriers, and refusal to generate credentials for
+another origin. It does not exercise application-owned HTTP requests, redirect following, or
+anonymous challenge discovery at a redirect destination. The Service vector exercises acceptance
+of a rebound assertion and rejection of assertions bound to another resource.
+
+Command vectors capture requests from the public Agent methods and exercise Service request
+handling. Protected-resource checks use real signatures, built-in credential handlers, and
+credential stores. Agent failure checks exercise command Problem Details propagation; delivery of
+resource responses belongs to the application. Scope policy and payment processing also belong
+to the application: these checks cover authentication and standardized failures, not payment
+settlement or a deployed application's authorization policy.
+
+Hosted-identity Agent vectors exercise the public Platform identity provider with controlled
+HTTP responses: discovery, identity selection and provisioning, delegated signing, continuation
+context and idempotency-conflict propagation. Platform vectors test server-side replay and
+retention separately. Agent response tests do not verify a Platform's signature or key custody.
+
+Service hosted-verification vectors exercise the configured-endpoint verifier and rejection of
+an authentication assertion without its resource. Platform discovery is an unsupported optional
+Service vector: the helper does not discover its endpoint. Reports mark that case as skipped,
+not passed. A separate test connects the real Platform and Service engines through a controlled
+transport to verify authorization and replay behavior.
 
 Run the bidirectional Rust and Node.js Agent, Service, and Platform interoperability flow with an
 adjacent `aep-node` checkout:

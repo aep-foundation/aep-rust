@@ -684,19 +684,76 @@ fn expires_idempotency_records_against_the_configured_clock() {
             .await
             .expect("created record");
         assert!(matches!(created, IdempotencyResult::Created(_)));
-        *clock.0.lock().expect("clock lock") = fixed_time() + Duration::from_secs(3599);
+        // PLT-IDP-004 retains the result for at least one hour, so it is still replayable at
+        // exactly one hour old and gone after that.
+        *clock.0.lock().expect("clock lock") = fixed_time() + Duration::from_secs(3600);
         let replayed = store
             .execute(input.clone(), execute(calls.clone()))
             .await
             .expect("replayed record");
         assert!(matches!(replayed, IdempotencyResult::Replayed(_)));
-        *clock.0.lock().expect("clock lock") = fixed_time() + Duration::from_secs(3600);
+        *clock.0.lock().expect("clock lock") = fixed_time() + Duration::from_secs(3601);
         let expired = store
             .execute(input, execute(calls.clone()))
             .await
             .expect("expired record");
         assert!(matches!(expired, IdempotencyResult::Created(_)));
         assert_eq!(calls.load(Ordering::SeqCst), 2);
+    });
+}
+
+#[test]
+fn retains_completed_results_for_an_hour_after_slow_operations() {
+    block_on(async {
+        for supplied_timestamp in [OffsetDateTime::UNIX_EPOCH, fixed_time()] {
+            let clock = Arc::new(MutableClock(Mutex::new(fixed_time())));
+            let store = MemoryIdempotencyStore::new(clock.clone());
+            let input = IdempotencyInput {
+                idempotency_key: "key".into(),
+                operation: IdempotentOperation::Provision,
+                principal: "owner".into(),
+                request_hash: "hash".into(),
+            };
+            let operation_clock = clock.clone();
+            let created = store
+                .execute(
+                    input.clone(),
+                    Box::new(move || {
+                        async move {
+                            *operation_clock.0.lock().expect("clock lock") +=
+                                Duration::from_secs(120);
+                            Ok(StoredResponse {
+                                body: b"{}".to_vec(),
+                                content_type: aep_core::MEDIA_TYPE.into(),
+                                created_at: supplied_timestamp,
+                                headers: HeaderMap::new(),
+                                status: 200,
+                            })
+                        }
+                        .boxed()
+                    }),
+                )
+                .await
+                .expect("created");
+            let IdempotencyResult::Created(created) = created else {
+                panic!("new result")
+            };
+            *clock.0.lock().expect("clock lock") = fixed_time() + Duration::from_secs(3720);
+            let replayed = store
+                .execute(
+                    input.clone(),
+                    Box::new(|| async { panic!("must replay completed result") }.boxed()),
+                )
+                .await
+                .expect("replayed");
+            assert_eq!(replayed, IdempotencyResult::Replayed(created.clone()));
+            *clock.0.lock().expect("clock lock") = fixed_time() + Duration::from_secs(3721);
+            let expired = store
+                .execute(input, Box::new(move || async move { Ok(created) }.boxed()))
+                .await
+                .expect("expired");
+            assert!(matches!(expired, IdempotencyResult::Created(_)));
+        }
     });
 }
 
