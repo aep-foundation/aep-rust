@@ -117,12 +117,10 @@ impl Inspection {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct InspectCacheEntry {
-    pub cache_control: Option<String>,
     pub cached_at: OffsetDateTime,
     pub document: InspectDocument,
-    pub etag: Option<String>,
     pub final_url: Url,
-    pub last_modified: Option<String>,
+    pub headers: HeaderMap,
 }
 
 #[async_trait]

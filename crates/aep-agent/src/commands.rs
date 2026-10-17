@@ -1,7 +1,7 @@
 use aep_core::{
     AUTHORIZATION_SCHEME, AgentStatus, BuiltInGrantResponse, Command, EnrollRequest,
-    EnrollResponse, GrantRequest, GrantType, HttpRequest, MEDIA_TYPE, RevokeRequest,
-    RevokeResponse, StatusResponse, StringBoolean, parse_built_in_grant_response,
+    EnrollResponse, GrantRequest, GrantType, HttpRequest, MEDIA_TYPE, PROBLEM_MEDIA_TYPE,
+    RevokeRequest, RevokeResponse, StatusResponse, StringBoolean, parse_built_in_grant_response,
     parse_enroll_response, parse_grant_request, parse_problem_details, parse_revoke_response,
     parse_status_response, validate_enroll_request, validate_revoke_request,
 };
@@ -10,6 +10,7 @@ use serde::Serialize;
 use serde_json::Value;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
+use crate::http_response::media_type_matches;
 use crate::{
     AgentError, AgentIdentity, AssertionSigner, CommandResult, CredentialRecord, EnrollOptions,
     GrantOptions, GrantResult, Inspection, OperationKey, RevokeOptions, Session, WaitOptions,
@@ -89,6 +90,16 @@ impl Session {
             ));
         }
         let started = self.client.clock.now();
+        // The elapsed-time bound below is the one the caller asked for. It relies on the supplied
+        // clock advancing as the supplied delay sleeps, so polling is also bounded by the number
+        // of intervals that fit in the timeout; a clock that does not advance then stops here
+        // instead of polling forever.
+        let mut remaining_attempts = options
+            .timeout
+            .as_nanos()
+            .checked_div(options.interval.as_nanos())
+            .unwrap_or_default()
+            .saturating_add(1);
         loop {
             let result = self.status().await?;
             if result.body.status == AgentStatus::Active {
@@ -108,7 +119,8 @@ impl Session {
                     "AEP Status polling timeout is too large".to_owned(),
                 )
             })?;
-            if elapsed >= timeout {
+            remaining_attempts = remaining_attempts.saturating_sub(1);
+            if elapsed >= timeout || remaining_attempts == 0 {
                 return Err(AgentError::PollingTimeout);
             }
             self.client.delay.sleep(options.interval).await;
@@ -150,9 +162,16 @@ impl Session {
             )
             .await?;
         if status.body.status != AgentStatus::Active {
+            // Grant never implicitly enrolls, so an identity the Service has not activated is
+            // refused before the request is sent. CORE-ERR-009 pairs `not_recognized` with 401,
+            // which is the answer the Service would give.
             return Err(AgentError::Command {
                 status: 401,
-                problem: None,
+                problem: Some(Box::new(aep_core::new_problem_details(
+                    aep_core::ErrorCode::NotRecognized,
+                    "Grant requires an active enrollment",
+                    401,
+                ))),
             });
         }
         let key = self
@@ -185,6 +204,15 @@ impl Session {
         if !value.is_object() {
             return Err(AgentError::Credential(
                 "AEP Grant response must be a JSON object".to_owned(),
+            ));
+        }
+        if value
+            .get("credential_id")
+            .and_then(Value::as_str)
+            .is_none_or(str::is_empty)
+        {
+            return Err(AgentError::Credential(
+                "AEP Grant response must contain a non-empty credential_id".to_owned(),
             ));
         }
         let credential = match grant_type {
@@ -228,6 +256,16 @@ impl Session {
             ));
         }
         let (inspection, identity, signer) = self.command_context(&Command::Revoke, true).await?;
+        // CORE-RVK-002: Revoke may only name a grant type the Service advertises.
+        if let Some(grant_type) = options.grant_type.as_ref()
+            && !inspection
+                .document
+                .commands
+                .grant_types
+                .contains(grant_type)
+        {
+            return Err(AgentError::NoCompatibleGrantType);
+        }
         let body = RevokeRequest {
             grant_type: options.grant_type.clone(),
             credential_id: options.credential_id.clone(),
@@ -385,12 +423,20 @@ impl Session {
             ));
         }
         if !response.status.is_success() {
+            // CORE-ERR-001 serves an AEP error as Problem Details under its own media type, and
+            // RFC 9457 carries the response status inside the document. A body that disagrees is
+            // reported as the bare status rather than as a structured AEP problem.
+            let problem = media_type_matches(&response.headers, PROBLEM_MEDIA_TYPE)
+                .then(|| parse_problem_details(&response.body).ok())
+                .flatten()
+                .filter(|problem| problem.status == i64::from(response.status.as_u16()))
+                .map(Box::new);
             return Err(AgentError::Command {
                 status: response.status.as_u16(),
-                problem: parse_problem_details(&response.body).ok().map(Box::new),
+                problem,
             });
         }
-        if !media_type_matches(&response.headers) {
+        if !media_type_matches(&response.headers, MEDIA_TYPE) {
             return Err(AgentError::Transport(
                 "AEP command response media type is invalid".to_owned(),
             ));
@@ -411,7 +457,9 @@ impl Session {
         provided: Option<String>,
     ) -> Result<String, AgentError> {
         if let Some(value) = provided {
-            if value.is_empty() {
+            // CORE-IDP-003 treats an empty field value as a missing key, and a value that is only
+            // whitespace renders as one.
+            if value.trim().is_empty() {
                 return Err(AgentError::InvalidConfiguration(
                     "AEP idempotency key must not be empty".to_owned(),
                 ));
@@ -429,7 +477,7 @@ impl Session {
                 service_url: self.service_url.clone(),
             })
             .await?;
-        if value.is_empty() {
+        if value.trim().is_empty() {
             return Err(AgentError::InvalidConfiguration(
                 "AEP idempotency key provider returned an empty key".to_owned(),
             ));
@@ -521,12 +569,4 @@ fn credential_record(
         service_did: inspection.document.service.did.clone(),
         service_url: inspection.service_url.clone(),
     })
-}
-
-fn media_type_matches(headers: &HeaderMap) -> bool {
-    headers
-        .get(header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.split(';').next())
-        .is_some_and(|value| value.trim().eq_ignore_ascii_case(MEDIA_TYPE))
 }

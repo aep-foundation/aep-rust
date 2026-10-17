@@ -56,9 +56,19 @@ shows the direct Service boundary without a web framework.
 responsible for extracting the AEP client assertion and idempotency header from the incoming
 request without logging either value.
 
+The memory command-idempotency store retains completed responses for one hour after
+execution completes. A failed operation releases its key for a retry; an exact retry
+of a completed operation returns the stored response. Custom stores must retain
+responses for at least one hour and bind each key to its Agent, command and request body.
+A command retry keeps its idempotency key but uses a fresh client assertion; assertion replay
+protection also applies to retries.
+
 Call `Service::authenticate_protected_resource` before serving an authenticated application
 resource. It accepts typed headers, method, and URL and returns either an `AuthenticatedPrincipal`
 or the complete `401` AEP challenge response.
+
+The default `ReqwestTransport` requires Tokio and TLS 1.3 or later for HTTPS. Applications using
+another runtime supply an `HttpTransport` with equivalent HTTPS, redirect and response-size controls.
 
 ## Grant Types
 
@@ -68,6 +78,16 @@ credential targets described by `RevokeRequest`, and may authenticate its creden
 at protected resources. A Service does not advertise Grant or Revoke when no Grant Types are
 configured.
 
+For built-in credentials, use `stored_api_key_grant_type`, `stored_basic_grant_type`, or
+`stored_oauth_bearer_grant_type` with an issuer callback and a `ServiceCredentialStore`.
+The issuer supplies credential material, expiry, and a unique identifier; API-key secrets and
+Basic passwords require at least 128 bits of entropy. The memory store retains one-way secret
+verifiers. A custom store receives usable credentials in `save`. API-key stores must retain
+salted hashes or equivalent one-way verifiers; Basic stores must apply strong password-storage
+controls. Protect stored records, honor expiry and revocation, and do not log credential material.
+The application remains responsible for authorizing resource access using the returned principal
+and scopes.
+
 ## Verification boundary
 
 `DidWebClientAssertionVerifier` performs real EdDSA or ES256 verification after resolving the
@@ -75,6 +95,43 @@ assertion key from the Agent's `did:web` document. Supply an alternate `ClientAs
 for a different supported identity or hosted verification boundary. The Service independently
 checks audience, operation, resource, validity window, identity method, and atomic replay
 consumption after verification.
+
+### Hosted Platform verification
+
+`HostedPlatformClientAssertionVerifier` calls a trusted Platform's verification endpoint using
+the Service's own Platform credential. The Platform's `Authorizer` must permit that Service to
+verify assertions for its Service DID. The Service does not need to own the Agent identity, and
+verification permission does not grant signing or lifecycle-management permission.
+
+```rust,no_run
+use std::sync::Arc;
+use aep_service::{
+    HostedPlatformClientAssertionVerifier, HostedPlatformClientAssertionVerifierOptions,
+    Service, ServiceOptions,
+};
+
+let mut options = HostedPlatformClientAssertionVerifierOptions::new(
+    "https://platform.example/v1/aep/verifications",
+);
+options.authorization = Some("Bearer service-platform-token".to_owned());
+let verifier = Arc::new(HostedPlatformClientAssertionVerifier::new(options)?);
+Service::new(ServiceOptions::new("did:web:api.example.com", verifier))?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+The default HTTP transport uses TLS 1.3, refuses redirects, and limits responses to 1 MiB.
+`request_timeout` defaults to 30 seconds and bounds injected transports too. Custom transports
+must enforce TLS 1.3, avoid redirects, and bound response reads. Configure a trusted endpoint;
+the Agent's assertion does not choose where the Service sends its Platform credential.
+
+The verification request's idempotency key is derived from its complete body, not the Service command's
+idempotency key. An exact verification retry uses the same key; a fresh assertion uses a new key.
+The Service still checks the returned claims and consumes its own replay record, so a cached
+Platform verification cannot authenticate the same assertion twice at the Service.
+
+Hosted verification is optional. Keep local `did:web` verification available as required by the
+AEP draft; the application selects its verification policy. This helper does not automatically
+fall back to local verification when a Platform refuses or cannot complete a request.
 
 See the [workspace guide](../../README.md) and the
 [AEP specifications](https://github.com/aep-foundation/aep-specs).

@@ -268,7 +268,7 @@ fn is_address_literal(value: &str) -> bool {
         return true;
     }
     if let Some(ipv6) = content.strip_prefix("IPv6:") {
-        return IpAddr::from_str(ipv6).is_ok();
+        return ipv6.parse::<std::net::Ipv6Addr>().is_ok();
     }
     let Some((tag, literal)) = content.split_once(':') else {
         return false;

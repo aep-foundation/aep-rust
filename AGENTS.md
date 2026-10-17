@@ -8,6 +8,8 @@ This workspace contains the official Rust crates for AEP:
 - `aep-agent`: Agent-side enrollment and credential workflows.
 - `aep-service`: Service-side enrollment, credential issuance, and authentication integration.
 - `aep-platform`: Platform-hosted Agent identity integration.
+- `aep-tower`: optional Tower command and protected-resource middleware.
+- `aep-axum`: optional Axum routing and authenticated-principal extraction.
 
 The normative protocol is maintained in `aep-foundation/aep-specs`. Check that source before
 implementing or changing wire behavior. Use `aep-node` as a reference implementation after the
@@ -22,14 +24,14 @@ behavior. Run `make coverage` when executable source changes.
 
 - Support Rust 1.88 and newer with Rust 2024 Edition; continuous integration covers the minimum
   supported compiler and current stable Rust.
-- Keep all four publishable crates on one workspace version.
+- Keep all six publishable crates on one workspace version.
 - Keep `aep-core` independent of asynchronous runtimes and HTTP clients.
 - Keep public asynchronous APIs runtime-neutral. Default networking uses Reqwest with Rustls;
   transports, clocks, and delays remain injectable.
 - Ship the complete AEP command, Claim, credential-profile, EdDSA, and ES256 contract without
   protocol feature flags.
-- Keep Service integration independent of Axum, Tower, and other application frameworks until the
-  adapter decision is made from a concrete Service HTTP boundary.
+- Keep the Service engine independent of application frameworks; Tower and Axum integration
+  belongs in the optional adapter crates.
 - Forbid unsafe code in every workspace crate.
 - Return typed errors rather than logging from library crates.
 - Do not implement JOSE or JWT cryptography directly; use narrowly vetted dependencies.

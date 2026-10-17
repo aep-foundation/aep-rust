@@ -27,7 +27,8 @@ let commands = CommandService::new(service, 1 << 20)?;
 # }
 ```
 
-Mount the paths returned by `CommandService::paths()` into the application's router. The adapter
+Mount the percent-encoded HTTP paths returned by `CommandService::paths()` without decoding them.
+The Service's Inspect document retains the configured `endpoint_base`. The adapter
 handles Inspect, Enroll, Status, Grant, and Revoke while enforcing the methods, authentication,
 idempotency, body limit, and AEP response media types.
 

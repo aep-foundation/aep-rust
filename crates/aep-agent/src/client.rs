@@ -1,4 +1,4 @@
-use std::{net::IpAddr, str::FromStr, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 
 use aep_core::{
     ClientAssertionClaims, DidWebDocumentUrlOptions, HttpTransport, IdentityMethod,
@@ -253,11 +253,13 @@ fn resolve_service_reference(
     Ok(url)
 }
 
+/// Reports whether plaintext HTTP is admissible for this URL under the development affordance.
+///
+/// The rule is the one `aep-core` applies to `did:web` identifiers and OpenAPI URLs, so a
+/// reference this crate resolves through `aep-core` and then re-checks here reaches the same
+/// answer in both places.
 pub(crate) fn is_loopback(url: &Url) -> bool {
-    url.host_str().is_some_and(|host| {
-        host.eq_ignore_ascii_case("localhost")
-            || IpAddr::from_str(host).is_ok_and(|address| address.is_loopback())
-    })
+    url.host_str().is_some_and(aep_core::is_loopback_host)
 }
 
 pub(crate) fn same_origin(left: &Url, right: &Url) -> bool {

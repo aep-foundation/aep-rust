@@ -1,6 +1,7 @@
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},
+    time::Duration,
 };
 
 use async_trait::async_trait;
@@ -14,6 +15,12 @@ use crate::{
 
 type IdempotencyKey = (String, String);
 type IdempotencyLock = Arc<futures::lock::Mutex<()>>;
+
+/// How long a replayable command result stays available.
+///
+/// CORE-IDP-004 requires at least one hour, so a record is still replayable at exactly that age
+/// and is dropped after it, which is what keeps the store from growing without bound.
+const IDEMPOTENCY_RETENTION: Duration = Duration::from_secs(3600);
 
 #[derive(Default)]
 pub struct SystemClock;
@@ -121,13 +128,29 @@ impl ClientAssertionReplayStore for MemoryClientAssertionReplayStore {
     }
 }
 
-#[derive(Default)]
 pub struct MemoryCommandIdempotencyStore {
+    clock: Arc<dyn Clock>,
     locks: Mutex<BTreeMap<IdempotencyKey, IdempotencyLock>>,
     records: Mutex<BTreeMap<IdempotencyKey, CommandIdempotencyRecord>>,
 }
 
+impl Default for MemoryCommandIdempotencyStore {
+    fn default() -> Self {
+        Self::with_clock(Arc::new(SystemClock))
+    }
+}
+
 impl MemoryCommandIdempotencyStore {
+    /// Builds an empty store that reads the time from `clock`, which is what decides when a
+    /// stored result has outlived its retention.
+    pub fn with_clock(clock: Arc<dyn Clock>) -> Self {
+        Self {
+            clock,
+            locks: Mutex::new(BTreeMap::new()),
+            records: Mutex::new(BTreeMap::new()),
+        }
+    }
+
     pub fn new(
         records: impl IntoIterator<Item = CommandIdempotencyRecord>,
     ) -> Result<Self, ServiceError> {
@@ -145,6 +168,7 @@ impl MemoryCommandIdempotencyStore {
             entries.insert(key, record);
         }
         Ok(Self {
+            clock: Arc::new(SystemClock),
             locks: Mutex::new(BTreeMap::new()),
             records: Mutex::new(entries),
         })
@@ -188,7 +212,12 @@ impl CommandIdempotencyStore for MemoryCommandIdempotencyStore {
         let command_lock = self.command_lock(&key)?;
         let result = {
             let _guard = command_lock.lock().await;
-            let existing = self.records.lock().map_err(lock_error)?.get(&key).cloned();
+            let now = self.clock.now();
+            let existing = {
+                let mut records = self.records.lock().map_err(lock_error)?;
+                records.retain(|_, record| record.created_at + IDEMPOTENCY_RETENTION >= now);
+                records.get(&key).cloned()
+            };
             if let Some(record) = existing {
                 if record.input.command == input.command
                     && record.input.request_hash == input.request_hash
@@ -200,12 +229,13 @@ impl CommandIdempotencyStore for MemoryCommandIdempotencyStore {
             } else {
                 match operation().await {
                     Ok(response) => {
+                        let created_at = self.clock.now();
                         self.records.lock().map_err(lock_error)?.insert(
                             key.clone(),
                             CommandIdempotencyRecord {
                                 input,
                                 response: response.clone(),
-                                created_at: OffsetDateTime::now_utc(),
+                                created_at,
                             },
                         );
                         Ok(CommandIdempotencyResult::Created(response))

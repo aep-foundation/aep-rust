@@ -16,15 +16,17 @@ use http::{HeaderMap, Method, Request, StatusCode, header};
 use http_body::Body;
 use http_body_util::{BodyExt as _, LengthLimitError, Limited};
 use tower::Service as TowerService;
+use url::Url;
 
 use crate::{
     HttpResponse, TowerError,
     response::{
-        empty_response, internal_error, json_response, method_not_allowed, problem_response,
-        service_response,
+        empty_response, head_response, internal_error, json_response, method_not_allowed,
+        problem_response, service_response,
     },
 };
 
+/// Percent-encoded HTTP request paths for mounting the command endpoints.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CommandPaths {
     pub enroll: String,
@@ -37,12 +39,20 @@ pub struct CommandPaths {
 impl CommandPaths {
     fn new(service: &Service) -> Result<Self, TowerError> {
         let inspect = service.inspect_document();
+        // Match the Agent's URL encoding before comparing HTTP request paths.
+        let origin = Url::parse("https://aep.invalid/")?;
+        let path = |command| -> Result<String, TowerError> {
+            Ok(origin
+                .join(&command_path_from_inspect(&inspect, command)?)?
+                .path()
+                .to_owned())
+        };
         Ok(Self {
-            enroll: command_path_from_inspect(&inspect, &Command::Enroll)?,
-            grant: command_path_from_inspect(&inspect, &Command::Grant)?,
+            enroll: path(&Command::Enroll)?,
+            grant: path(&Command::Grant)?,
             inspect: aep_core::WELL_KNOWN_PATH.to_owned(),
-            revoke: command_path_from_inspect(&inspect, &Command::Revoke)?,
-            status: command_path_from_inspect(&inspect, &Command::Status)?,
+            revoke: path(&Command::Revoke)?,
+            status: path(&Command::Status)?,
         })
     }
 }
@@ -78,16 +88,30 @@ impl CommandService {
         B::Data: Buf + Send,
         B::Error: Into<Box<dyn Error + Send + Sync>>,
     {
-        let route = self.route(request.method(), request.uri().path());
-        match route {
+        // RFC 9110 Section 9.3.2 requires HEAD wherever GET is supported, and answers it with the
+        // GET response minus the content.
+        let head = request.method() == Method::HEAD;
+        let command = match self.route(request.method(), request.uri().path()) {
             Route::Unknown => return Ok(empty_response(StatusCode::NOT_FOUND)),
-            Route::MethodNotAllowed(method) => return Ok(method_not_allowed(method)),
+            Route::MethodNotAllowed(allow) => {
+                let response = method_not_allowed(allow);
+                return Ok(if head {
+                    head_response(response)
+                } else {
+                    response
+                });
+            }
             Route::Inspect => {
-                return json_response(
+                let response = json_response(
                     StatusCode::OK,
                     aep_core::MEDIA_TYPE,
                     &self.service.inspect_document(),
-                );
+                )?;
+                return Ok(if head {
+                    head_response(response)
+                } else {
+                    response
+                });
             }
             Route::Status => {
                 let response = self
@@ -96,10 +120,15 @@ impl CommandService {
                         client_assertion: client_assertion(request.headers()),
                     })
                     .await?;
-                return service_response(response);
+                let response = service_response(response)?;
+                return Ok(if head {
+                    head_response(response)
+                } else {
+                    response
+                });
             }
-            Route::Enroll | Route::Grant | Route::Revoke => {}
-        }
+            Route::Command(command) => command,
+        };
         if !is_aep_content_type(request.headers()) {
             return Ok(problem_response(
                 ErrorCode::InvalidRequest,
@@ -113,13 +142,10 @@ impl CommandService {
             client_assertion,
             idempotency_key,
         };
-        let response = match route {
-            Route::Enroll => self.service.enroll(&body, options).await,
-            Route::Grant => self.service.grant(&body, options).await,
-            Route::Revoke => self.service.revoke(&body, options).await,
-            Route::Inspect | Route::Status | Route::Unknown | Route::MethodNotAllowed(_) => {
-                unreachable!()
-            }
+        let response = match command {
+            CommandRoute::Enroll => self.service.enroll(&body, options).await,
+            CommandRoute::Grant => self.service.grant(&body, options).await,
+            CommandRoute::Revoke => self.service.revoke(&body, options).await,
         }?;
         service_response(response)
     }
@@ -127,22 +153,34 @@ impl CommandService {
     fn route(&self, method: &Method, path: &str) -> Route {
         for (candidate, expected, route) in [
             (self.paths.inspect.as_str(), Method::GET, Route::Inspect),
-            (self.paths.enroll.as_str(), Method::POST, Route::Enroll),
+            (
+                self.paths.enroll.as_str(),
+                Method::POST,
+                Route::Command(CommandRoute::Enroll),
+            ),
             (self.paths.status.as_str(), Method::GET, Route::Status),
-            (self.paths.grant.as_str(), Method::POST, Route::Grant),
-            (self.paths.revoke.as_str(), Method::POST, Route::Revoke),
+            (
+                self.paths.grant.as_str(),
+                Method::POST,
+                Route::Command(CommandRoute::Grant),
+            ),
+            (
+                self.paths.revoke.as_str(),
+                Method::POST,
+                Route::Command(CommandRoute::Revoke),
+            ),
         ] {
-            if path == candidate {
-                return if method == expected {
-                    route
-                } else {
-                    Route::MethodNotAllowed(if expected == Method::GET {
-                        "GET"
-                    } else {
-                        "POST"
-                    })
-                };
+            if path != candidate {
+                continue;
             }
+            let safe = expected == Method::GET;
+            return if method == expected || (safe && method == Method::HEAD) {
+                route
+            } else if safe {
+                Route::MethodNotAllowed("GET, HEAD")
+            } else {
+                Route::MethodNotAllowed("POST")
+            };
         }
         Route::Unknown
     }
@@ -178,15 +216,24 @@ where
     }
 }
 
+/// A resolved AEP endpoint.
+///
+/// The three body-carrying commands share one variant so that the arm selecting the Service call
+/// is total: an endpoint cannot be added to the router without the compiler demanding its call.
 #[derive(Clone, Copy)]
 enum Route {
-    Enroll,
-    Grant,
+    Command(CommandRoute),
     Inspect,
     MethodNotAllowed(&'static str),
-    Revoke,
     Status,
     Unknown,
+}
+
+#[derive(Clone, Copy)]
+enum CommandRoute {
+    Enroll,
+    Grant,
+    Revoke,
 }
 
 async fn collect_body<B>(body: B, maximum_bytes: usize) -> Result<Bytes, TowerError>

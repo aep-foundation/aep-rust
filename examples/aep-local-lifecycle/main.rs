@@ -275,7 +275,8 @@ fn service(key_id: String) -> Result<Arc<Service>, Box<dyn std::error::Error>> {
                     .map_err(|error| ServiceError::Handler(error.to_string()))?;
                 Ok::<_, ServiceError>(ApiKeyGrantResponse {
                     additional: BTreeMap::new(),
-                    api_key: Uuid::new_v4().to_string(),
+                    // Two independent UUIDs supply 244 random bits for the API-key secret.
+                    api_key: format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple()),
                     credential_id: Uuid::new_v4().to_string(),
                     expires_at,
                     header: "x-api-key".to_owned(),

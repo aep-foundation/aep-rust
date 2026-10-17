@@ -44,9 +44,9 @@ pub struct Service {
 impl Service {
     pub fn new(options: ServiceOptions) -> Result<Arc<Self>, ServiceError> {
         let configuration = build_configuration(&options)?;
+        let clock = options.clock.unwrap_or_else(|| Arc::new(SystemClock));
         Ok(Arc::new(Self {
             allow_insecure_loopback: options.allow_insecure_loopback,
-            clock: options.clock.unwrap_or_else(|| Arc::new(SystemClock)),
             configuration,
             enrollment_policy: options
                 .enrollment_policy
@@ -54,13 +54,14 @@ impl Service {
             enrollment_store: options
                 .enrollment_store
                 .unwrap_or_else(|| Arc::new(MemoryEnrollmentStore::default())),
-            idempotency_store: options
-                .idempotency_store
-                .unwrap_or_else(|| Arc::new(MemoryCommandIdempotencyStore::default())),
+            idempotency_store: options.idempotency_store.unwrap_or_else(|| {
+                Arc::new(MemoryCommandIdempotencyStore::with_clock(clock.clone()))
+            }),
             replay_store: options
                 .replay_store
                 .unwrap_or_else(|| Arc::new(MemoryClientAssertionReplayStore::default())),
             verifier: options.verifier,
+            clock,
         }))
     }
 
@@ -98,6 +99,14 @@ impl Service {
             .as_ref()
             .is_some_and(|key| key != &options.idempotency_key)
         {
+            return Ok(problem(ErrorCode::InvalidRequest, 400));
+        }
+        // CLM-SEC-006: the claim document is bounded before it is stored or acted on. CLM-SEC-003
+        // permits `invalid_request` for a document the Service will not parse.
+        if !within_claim_value_limits(
+            request.claims.as_ref(),
+            self.configuration.claim_value_limits,
+        ) {
             return Ok(problem(ErrorCode::InvalidRequest, 400));
         }
         let input = idempotency_input(
@@ -387,7 +396,8 @@ impl Service {
             request.claims.as_ref(),
         );
         if !missing.is_empty() {
-            let mut response = problem(ErrorCode::RequirementsUnmet, 403);
+            // CORE-ERR-009 pairs `requirements_unmet` with 422.
+            let mut response = problem(ErrorCode::RequirementsUnmet, 422);
             let ResponseBody::Problem(details) = &mut response.body else {
                 unreachable!();
             };
@@ -608,6 +618,7 @@ fn build_configuration(options: &ServiceOptions) -> Result<ServiceConfiguration,
     validate_inspect_document(&inspect_document).map_err(aep_core::CoreError::from)?;
     Ok(ServiceConfiguration {
         authentication_methods: options.authentication_methods.clone(),
+        claim_value_limits: options.claim_value_limits.validate()?,
         claims: options.claims.clone(),
         grant_handlers,
         inspect_document,
@@ -616,6 +627,57 @@ fn build_configuration(options: &ServiceOptions) -> Result<ServiceConfiguration,
         service_did: options.service_did.clone(),
         signing_algorithms: options.signing_algorithms.clone(),
     })
+}
+
+/// Reports whether a claim document stays inside the bounds CLM-SEC-006 requires a Service to
+/// place on it.
+fn within_claim_value_limits(
+    claims: Option<&aep_core::ClaimValues>,
+    limits: crate::ClaimValueLimits,
+) -> bool {
+    let Some(claims) = claims else {
+        return true;
+    };
+    let Ok(encoded) = serde_json::to_vec(claims) else {
+        return false;
+    };
+    if encoded.len() > limits.maximum_encoded_bytes {
+        return false;
+    }
+    let Ok(value) = serde_json::from_slice::<Value>(&encoded) else {
+        return false;
+    };
+    let mut members = 0;
+    within_value_limits(&value, 1, limits, &mut members)
+}
+
+fn within_value_limits(
+    value: &Value,
+    depth: usize,
+    limits: crate::ClaimValueLimits,
+    members: &mut usize,
+) -> bool {
+    match value {
+        Value::String(value) => value.chars().count() <= limits.maximum_string_length,
+        Value::Null | Value::Bool(_) | Value::Number(_) => true,
+        Value::Array(values) => {
+            depth <= limits.maximum_object_depth
+                && values
+                    .iter()
+                    .all(|value| within_value_limits(value, depth + 1, limits, members))
+        }
+        Value::Object(object) => {
+            if depth > limits.maximum_object_depth {
+                return false;
+            }
+            object.iter().all(|(name, value)| {
+                *members += 1;
+                *members <= limits.maximum_member_count
+                    && name.chars().count() <= limits.maximum_string_length
+                    && within_value_limits(value, depth + 1, limits, members)
+            })
+        }
+    }
 }
 
 fn enroll_response(record: &EnrollmentRecord) -> EnrollResponse {

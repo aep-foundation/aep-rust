@@ -11,9 +11,12 @@ manifest=.conformance/capability-manifest.json
 mkdir -p "$output_dir"
 cargo build --locked -p aep-conformance
 
-printf '%s\n' "{\"claims\":[{\"profiles\":[\"core-http\",\"claims\",\"api-key\",\"basic\",\"oauth-bearer\"],\"role\":\"agent\"},{\"profiles\":[\"platform-hosted-identity\"],\"role\":\"platform\"},{\"profiles\":[\"core-http\",\"claims\",\"api-key\",\"basic\",\"oauth-bearer\"],\"role\":\"service\"}],\"implementation\":{\"name\":\"aep-rust\",\"version\":\"$implementation_version\"},\"manifest_version\":\"1\"}" > "$manifest"
+printf '%s\n' "{\"claims\":[{\"profiles\":[\"core-http\",\"claims\",\"api-key\",\"basic\",\"oauth-bearer\",\"platform-hosted-identity\"],\"role\":\"agent\"},{\"profiles\":[\"platform-hosted-identity\"],\"role\":\"platform\"},{\"profiles\":[\"core-http\",\"claims\",\"api-key\",\"basic\",\"oauth-bearer\",\"platform-hosted-identity\"],\"role\":\"service\"}],\"implementation\":{\"name\":\"aep-rust\",\"version\":\"$implementation_version\"},\"manifest_version\":\"1\"}" > "$manifest"
 
 for role in agent platform service; do
+  if [ "$role" = agent ]; then
+    printf '%s\n' 'Agent redirect-safety checks header generation and origin refusal; application-owned HTTP redirects and anonymous destination discovery are not exercised.' >&2
+  fi
   BUNDLE_GEMFILE="$specs_dir/ietf/Gemfile" bundle exec ruby "$specs_dir/ietf/scripts/run_conformance.rb" \
     --role "$role" \
     --manifest "$manifest" \

@@ -4,6 +4,7 @@ mod authentication;
 mod client;
 mod commands;
 mod error;
+mod http_response;
 mod inspect;
 mod platform_provider;
 mod store;

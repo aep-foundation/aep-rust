@@ -156,7 +156,11 @@ struct AssertionCustomClaims {
     iss: String,
     jti: String,
     op: AssertionOperation,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "crate::validation::deserialize_optional_non_null",
+        skip_serializing_if = "Option::is_none"
+    )]
     resource: Option<String>,
     sub: String,
     #[serde(flatten)]
@@ -226,7 +230,11 @@ pub fn verify_client_assertion(
         },
     )?;
     validate_assertion_key_id(key_id, &claims)?;
-    validate_expected_claims(&claims, options)?;
+    validate_expected_claims(
+        &claims,
+        token.claims().not_before.map(|value| value.timestamp()),
+        options,
+    )?;
     Ok(claims)
 }
 
@@ -322,6 +330,7 @@ fn validate_allowed_algorithm(
 
 fn validate_expected_claims(
     claims: &ClientAssertionClaims,
+    not_before: Option<i64>,
     options: &VerifyClientAssertionOptions,
 ) -> Result<(), CoreError> {
     for (actual, expected, message) in [
@@ -358,7 +367,10 @@ fn validate_expected_claims(
         .unwrap_or(RECOMMENDED_CLOCK_SKEW.as_secs());
     let tolerance = i64::try_from(tolerance)
         .map_err(|_| CoreError::Invalid("clock tolerance is too large".to_owned()))?;
-    if claims.iat > now.saturating_add(tolerance) || claims.exp <= now.saturating_sub(tolerance) {
+    if claims.iat > now.saturating_add(tolerance)
+        || claims.exp <= now.saturating_sub(tolerance)
+        || not_before.is_some_and(|value| value > now.saturating_add(tolerance))
+    {
         return Err(CoreError::Invalid(
             "AEP client assertion is outside its validity window".to_owned(),
         ));

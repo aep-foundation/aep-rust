@@ -55,10 +55,20 @@ fn validates_platform_urls_and_discovery_contract() {
     document.endpoints.hosted_verification = Some("https://other.example/verify".to_owned());
     assert!(validate_discovery(&document, false).is_err());
     document = discovery();
+    document.platform.did = Some("did:web:platform.example".to_owned());
+    assert!(validate_discovery(&document, false).is_ok());
+    document.platform.did = Some("platform.example".to_owned());
+    assert!(validate_discovery(&document, false).is_err());
+    document = discovery();
     document.identity.did_url_template = "not a URL/{agent_did_id}".to_owned();
     assert!(validate_discovery(&document, false).is_err());
     document.identity.did_url_template =
         "http://platform.example/agents/{agent_did_id}/did.json".to_owned();
+    assert!(validate_discovery(&document, false).is_err());
+    document.identity.did_url_template =
+        "https://platform.example/agents/{agent_did_id}/did.json".to_owned();
+    document.platform.hosted_verification = true;
+    document.endpoints.hosted_verification = Some("/verify?query=unexpected".to_owned());
     assert!(validate_discovery(&document, false).is_err());
 }
 
@@ -148,26 +158,33 @@ fn validates_completed_and_pending_sign_contracts() {
 fn applies_platform_cache_and_http_helpers() {
     let cached_at = OffsetDateTime::parse("2026-08-31T12:00:00Z", &Rfc3339).expect("time");
     let mut entry = DiscoveryCacheEntry {
-        cache_control: None,
         cached_at,
         document: discovery(),
-        etag: None,
         final_url: Url::parse("https://platform.example/.well-known/aep-platform").expect("URL"),
-        last_modified: None,
+        headers: HeaderMap::new(),
     };
-    assert!(discovery_fresh(
-        &entry,
+    assert!(cache_fresh(
+        &entry.headers,
+        entry.cached_at,
         cached_at + time::Duration::seconds(299)
     ));
-    entry.cache_control = Some("max-age=1".to_owned());
-    assert!(!discovery_fresh(
-        &entry,
+    entry
+        .headers
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("max-age=1"));
+    assert!(!cache_fresh(
+        &entry.headers,
+        entry.cached_at,
         cached_at + time::Duration::seconds(2)
     ));
-    entry.cache_control = Some("max-age=invalid".to_owned());
-    assert!(!discovery_fresh(&entry, cached_at));
-    entry.cache_control = Some("no-store".to_owned());
-    assert!(!discovery_fresh(&entry, cached_at));
+    entry.headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("max-age=invalid"),
+    );
+    assert!(!cache_fresh(&entry.headers, entry.cached_at, cached_at));
+    entry
+        .headers
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    assert!(!cache_fresh(&entry.headers, entry.cached_at, cached_at));
 
     let mut headers = HeaderMap::new();
     headers.insert(
@@ -179,10 +196,10 @@ fn applies_platform_cache_and_http_helpers() {
         header::LAST_MODIFIED,
         HeaderValue::from_static("Sun, 31 Aug 2026 12:00:00 GMT"),
     );
-    merge_cache_headers(&mut entry, &headers);
-    assert_eq!(entry.cache_control.as_deref(), Some("max-age=60"));
-    assert_eq!(entry.etag.as_deref(), Some("\"two\""));
-    assert!(entry.last_modified.is_some());
+    entry.headers = cache_headers(&headers, Some(&entry.headers), cached_at, cached_at);
+    assert_eq!(entry.headers[header::CACHE_CONTROL], "max-age=60");
+    assert_eq!(entry.headers[header::ETAG], "\"two\"");
+    assert!(entry.headers.contains_key(header::LAST_MODIFIED));
 
     assert!(valid_endpoint_path("/v1/aep/identities"));
     assert!(!valid_endpoint_path("https://other.example/path"));

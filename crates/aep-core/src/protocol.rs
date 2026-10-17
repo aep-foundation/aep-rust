@@ -35,7 +35,12 @@ pub fn validate_enroll_request(value: &EnrollRequest) -> Result<(), ValidationEr
     if let Some(claims) = &value.claims
         && let Err(error) = validate_claim_values(claims)
     {
-        issues.extend(error.issues);
+        // The claim document is a member of the request, so its issue paths are re-rooted under
+        // `$.claims` to name the member the caller has to correct.
+        issues.extend(error.issues.into_iter().map(|mut issue| {
+            issue.path.insert_str(1, ".claims");
+            issue
+        }));
     }
     result("Enroll request", issues)
 }
@@ -110,6 +115,13 @@ pub fn validate_revoke_request(value: &RevokeRequest) -> Result<(), ValidationEr
     }
     if value.credential_id.as_deref() == Some("") {
         issues.push(issue("$.credential_id", "Expected a non-empty string."));
+    }
+    if value
+        .grant_type
+        .as_ref()
+        .is_some_and(|grant_type| grant_type.as_str().is_empty())
+    {
+        issues.push(issue("$.grant_type", "Expected a non-empty string."));
     }
     if has_all == has_grant || (has_all && has_credential) {
         issues.push(issue(
@@ -258,6 +270,17 @@ pub fn parse_problem_details(data: &[u8]) -> Result<ProblemDetails, ParseError> 
     parse_and_validate(data, "Problem Details", validate_problem_details)
 }
 
+/// One AEP error code: `error-code = lc-token *( "_" lc-token )`.
+fn is_error_code(value: &str) -> bool {
+    !value.is_empty()
+        && value.split('_').all(|token| {
+            token.as_bytes().first().is_some_and(u8::is_ascii_lowercase)
+                && token
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+        })
+}
+
 pub fn validate_problem_details(value: &ProblemDetails) -> Result<(), ValidationError> {
     let mut issues = Vec::new();
     if value.problem_type != format!("urn:aep:error:{}", value.code.as_str()) {
@@ -267,7 +290,12 @@ pub fn validate_problem_details(value: &ProblemDetails) -> Result<(), Validation
     if value.status == 0 {
         issues.push(issue("$.status", "Expected an integer HTTP status."));
     }
-    require_non_empty(value.code.as_str(), "$.code", &mut issues);
+    // `error-code = lc-token *( "_" lc-token )` with `lc-token = LCALPHA *( LCALPHA / DIGIT )`,
+    // so a code carrying an uppercase letter is not the registered syntax even when `type` agrees
+    // with it.
+    if !is_error_code(value.code.as_str()) {
+        issues.push(issue("$.code", "Expected a registered AEP error code."));
+    }
     if value.owner_action_required == Some(StringBoolean::False) {
         issues.push(issue("$.owner_action_required", "Expected true."));
     }

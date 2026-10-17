@@ -25,7 +25,7 @@ where
             return Err(ValidationError {
                 document_type: document_type.to_owned(),
                 issues: vec![ValidationIssue {
-                    path: json_path(&error.path().to_string()),
+                    path: json_path(error.path()),
                     message: error.inner().to_string(),
                 }],
             }
@@ -112,12 +112,27 @@ pub(crate) fn validate_non_empty_strings(
     require_unique(values, path, issues);
 }
 
-fn json_path(path: &str) -> String {
-    if path.is_empty() {
-        "$".to_owned()
-    } else if path.starts_with('[') {
-        format!("${path}")
-    } else {
-        format!("$.{path}")
+/// Renders a deserializer path in the JSONPath spelling every other issue in this crate uses, so
+/// that a member reported by the parser and the same member reported by a validator name it the
+/// same way.
+fn json_path(path: &serde_path_to_error::Path) -> String {
+    let mut rendered = String::from("$");
+    for segment in path.iter() {
+        match segment {
+            serde_path_to_error::Segment::Seq { index } => {
+                rendered.push_str(&format!("[{index}]"));
+            }
+            serde_path_to_error::Segment::Map { key } => {
+                rendered.push('.');
+                rendered.push_str(key);
+            }
+            // An enum variant and a segment the deserializer could not name are both rendered as
+            // the member they stand in for.
+            other => {
+                rendered.push('.');
+                rendered.push_str(&other.to_string());
+            }
+        }
     }
+    rendered
 }

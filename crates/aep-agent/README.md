@@ -27,6 +27,18 @@ to an AEP Platform. `IdentityStore`, `CredentialStore`, `InspectCache`, `HttpTra
 `Delay`, and `IdempotencyKeyProvider` can also be replaced. In-memory stores and a Rustls-backed
 HTTP transport are the defaults.
 
+The default HTTP transport requires Tokio and TLS 1.3 or later. Applications using another
+runtime can supply an `HttpTransport`. `authentication` returns headers; the application sends
+the protected-resource request and is responsible for safe redirect handling.
+
+When using AEP JWT authentication after a same-origin redirect, call `authentication` with the
+destination URL to obtain a fresh resource-bound assertion and keep the selected header carrier.
+Do not reuse the original JWT. A session credential may be reused only if it authorizes the
+redirected request.
+For a cross-origin redirect, remove all authentication and payment credentials, including any
+Service-selected API-key header, before sending an anonymous request to the destination. Require
+a valid AEP challenge there before authenticating with a session for that origin.
+
 ## Workflow
 
 Create the Agent once, then create inexpensive Service sessions:
@@ -79,6 +91,11 @@ ordering reaches it. Callers can request one credential or require a client asse
 The default stores are process-local. Applications that need credentials or identities after a
 restart must provide durable store implementations. Secret-bearing store implementations are
 responsible for encryption and access control appropriate to their environment.
+
+Custom Inspect caches store `InspectCacheEntry.headers` alongside the document, final URL, and
+receipt time. Preserve these headers when persisting entries: they contain the freshness policy,
+representation age, and validators needed for revalidation. The Agent retains only cache-related
+headers, not cookies or authorization fields.
 
 See the [workspace guide](../../README.md), the [`aep-core` models](../aep-core/README.md), and the
 [AEP specifications](https://github.com/aep-foundation/aep-specs).

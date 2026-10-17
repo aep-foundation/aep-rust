@@ -19,6 +19,7 @@ impl ReqwestTransport {
         }
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
+            .tls_version_min(reqwest::tls::Version::TLS_1_3)
             .timeout(timeout)
             .build()
             .map_err(|error| TransportError::with_source("build HTTP client", error))?;
