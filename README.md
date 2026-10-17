@@ -35,7 +35,7 @@ An Agent normally needs only:
 
 ```toml
 [dependencies]
-aep-agent = "0.1"
+aep-agent = "0.2"
 ```
 
 A framework-neutral Service uses `aep-service`. Add `aep-tower` for reusable HTTP middleware or
@@ -43,8 +43,8 @@ A framework-neutral Service uses `aep-service`. Add `aep-tower` for reusable HTT
 
 ```toml
 [dependencies]
-aep-axum = "0.1"
-aep-service = "0.1"
+aep-axum = "0.2"
+aep-service = "0.2"
 ```
 
 An Agent that delegates identity custody to a remote Platform uses the `PlatformIdentityProvider`

@@ -7,7 +7,7 @@ Agent Enrollment Protocol.
 
 ```toml
 [dependencies]
-aep-core = "0.1"
+aep-core = "0.2"
 ```
 
 ## Parse protocol documents

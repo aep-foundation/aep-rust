@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "aep-agent"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "aep-core",
  "async-trait",
@@ -26,7 +26,7 @@ dependencies = [
 
 [[package]]
 name = "aep-axum"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "aep-core",
  "aep-service",
@@ -42,7 +42,7 @@ dependencies = [
 
 [[package]]
 name = "aep-conformance"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "aep-agent",
  "aep-core",
@@ -62,7 +62,7 @@ dependencies = [
 
 [[package]]
 name = "aep-core"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -84,7 +84,7 @@ dependencies = [
 
 [[package]]
 name = "aep-examples"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "aep-agent",
  "aep-axum",
@@ -112,7 +112,7 @@ dependencies = [
 
 [[package]]
 name = "aep-platform"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "aep-core",
  "async-trait",
@@ -130,7 +130,7 @@ dependencies = [
 
 [[package]]
 name = "aep-service"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "aep-core",
  "async-trait",
@@ -152,7 +152,7 @@ dependencies = [
 
 [[package]]
 name = "aep-tower"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "aep-core",
  "aep-service",

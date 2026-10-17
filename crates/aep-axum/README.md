@@ -7,8 +7,8 @@ discovery and lifecycle routes and provides an extractor for authenticated appli
 
 ```toml
 [dependencies]
-aep-axum = "0.1"
-aep-service = "0.1"
+aep-axum = "0.2"
+aep-service = "0.2"
 axum = "0.8"
 url = "2.5"
 ```
