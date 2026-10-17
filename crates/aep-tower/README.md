@@ -8,8 +8,8 @@ layer for protected application resources.
 
 ```toml
 [dependencies]
-aep-service = "0.1"
-aep-tower = "0.1"
+aep-service = "0.2"
+aep-tower = "0.2"
 ```
 
 ## Command endpoints

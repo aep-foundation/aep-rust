@@ -7,7 +7,7 @@ workflows for the Agent Enrollment Protocol.
 
 ```toml
 [dependencies]
-aep-agent = "0.1"
+aep-agent = "0.2"
 ```
 
 ## What it provides

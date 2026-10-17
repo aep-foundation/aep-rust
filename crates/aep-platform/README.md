@@ -10,7 +10,7 @@ consume a Platform use `aep-agent` and provide its `IdentityProvider` boundary i
 
 ```toml
 [dependencies]
-aep-platform = "0.1"
+aep-platform = "0.2"
 ```
 
 ## Responsibilities
