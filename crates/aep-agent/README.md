@@ -97,5 +97,23 @@ receipt time. Preserve these headers when persisting entries: they contain the f
 representation age, and validators needed for revalidation. The Agent retains only cache-related
 headers, not cookies or authorization fields.
 
+### Upgrading application storage from 0.1.1
+
+Recompile custom cache implementations against the matching AEP crate versions.
+`InspectCacheEntry.headers` replaces the individual `cache_control`, `etag`, and
+`last_modified` fields. Old struct initializers fail to compile, identifying the adapters
+that need updating. Save and restore the complete cache-header map, not just those three
+values, because response age and expiration also affect freshness.
+
+If your application persists Inspect entries, invalidate old entries and fetch them again
+rather than inventing missing response metadata. Use a separate cache namespace if old
+and new workers run together. This invalidation applies only to the Inspect cache.
+
+Agent credentials, Service credentials and enrollments, Platform identities, and completed
+command-idempotency responses do not require a hash conversion. Preserve those records and
+their expiry and revocation state. Deleting completed command responses can repeat operations;
+they are not disposable Inspect-cache entries. Private in-memory stores are not a durable
+serialization format for application adapters.
+
 See the [workspace guide](../../README.md), the [`aep-core` models](../aep-core/README.md), and the
 [AEP specifications](https://github.com/aep-foundation/aep-specs).
