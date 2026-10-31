@@ -552,6 +552,8 @@ fn grant_follows_the_enrolment_lifecycle() {
             fixture
                 .store
                 .save(EnrollmentRecord {
+                    acknowledged_document_ids: Vec::new(),
+                    required_document_ids: Vec::new(),
                     agent_did: AGENT_DID.to_owned(),
                     claims: Default::default(),
                     created_at: fixed_time(),
@@ -935,6 +937,8 @@ fn assertions_authenticate_only_active_enrolments() {
         fixture
             .store
             .save(EnrollmentRecord {
+                acknowledged_document_ids: Vec::new(),
+                required_document_ids: Vec::new(),
                 agent_did: AGENT_DID.to_owned(),
                 claims: Default::default(),
                 created_at: fixed_time(),
@@ -1192,6 +1196,8 @@ fn a_service_without_grant_types_advertises_fewer_commands() {
 fn memory_stores_guard_their_invariants() {
     block_on(async {
         let record = |agent_did: &str| EnrollmentRecord {
+            acknowledged_document_ids: Vec::new(),
+            required_document_ids: Vec::new(),
             agent_did: agent_did.to_owned(),
             claims: Default::default(),
             created_at: fixed_time(),
@@ -1427,7 +1433,6 @@ fn responses_render_to_their_wire_form() {
             .expect("answered");
         assert_eq!(revoke.to_json().expect("JSON"), json!({}));
 
-        // CORE-ENR-008: a repeat Enroll returns the existing record rather than re-running policy.
         let repeated = fixture
             .service
             .enroll(&enroll_body(json!({})), idempotent("a4", "request-4"))
@@ -1671,6 +1676,8 @@ fn session_principals_must_describe_their_own_credential() {
         fixture
             .store
             .save(EnrollmentRecord {
+                acknowledged_document_ids: Vec::new(),
+                required_document_ids: Vec::new(),
                 agent_did: AGENT_DID.to_owned(),
                 claims: Default::default(),
                 created_at: fixed_time(),
@@ -1710,10 +1717,11 @@ fn the_enrolment_policy_decides_the_lifecycle_state() {
             let mut settings = options(&Settings::default());
             settings.enrollment_policy =
                 Some(Arc::new(StaticEnrollmentPolicy::new(EnrollmentDecision {
-                    owner_action_required: true,
-                    requirements_pending: vec!["company.registration".to_owned()],
+                    owner_action_required: Some(true),
+                    requirements_pending: Some(vec!["company.registration".to_owned()]),
                     status: decision,
-                    verification_pending: vec!["contact.email".to_owned()],
+                    verification_pending: Some(vec!["contact.email".to_owned()]),
+                    ..EnrollmentDecision::default()
                 })));
             let service = Service::new(settings).expect("Service");
             let response = service
@@ -1816,6 +1824,7 @@ fn a_prepopulated_idempotency_store_replays_its_records() {
 fn response_debug_output_redacts_grant_credentials() {
     let bodies = [
         ResponseBody::Enroll(aep_core::EnrollResponse {
+            acknowledged_document_ids: None,
             additional: BTreeMap::new(),
             owner_action_required: None,
             requirements_pending: None,
@@ -1823,11 +1832,11 @@ fn response_debug_output_redacts_grant_credentials() {
             verification_pending: None,
         }),
         ResponseBody::Grant(json!({"api_key": "secret"})),
-        ResponseBody::Problem(aep_core::new_problem_details(
+        ResponseBody::Problem(Box::new(aep_core::new_problem_details(
             ErrorCode::NotRecognized,
             "Not recognized",
             401,
-        )),
+        ))),
         ResponseBody::Revoke(aep_core::RevokeResponse::default()),
         ResponseBody::Status(aep_core::StatusResponse {
             additional: BTreeMap::new(),

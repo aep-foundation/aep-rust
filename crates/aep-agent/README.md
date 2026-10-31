@@ -14,7 +14,7 @@ aep-agent = "0.2"
 
 - `Client` and Service-scoped `Session` handles for Inspect, Enroll, Status, Grant, and Revoke.
 - same-origin Inspect redirects, bounded responses, HTTP caching, and conditional revalidation;
-- required-Claim checks before Enroll;
+- repeated Enroll with explicit document acknowledgements and Service-owned requirements;
 - Service-scoped identity storage, local identity-provider contracts, and a production HTTP client
   for Platform-hosted identities;
 - credential storage, expiration, selection, presentation, revocation, and explicit local removal;
@@ -91,6 +91,30 @@ ordering reaches it. Callers can request one credential or require a client asse
 The default stores are process-local. Applications that need credentials or identities after a
 restart must provide durable store implementations. Secret-bearing store implementations are
 responsible for encryption and access control appropriate to their environment.
+
+## Service Documents
+
+Inspect exposes `service_documents`, including each document's ID, title, enrollment requirement,
+and representations. Present required documents to the Owner before supplying
+`EnrollOptions.acknowledged_document_ids`. `None` makes no declaration; `Some(vec![])` explicitly
+declares none. Reading or inspecting never acknowledges a document. Enroll validates the response
+echo against this operation's declaration, not the Service's accumulated history.
+
+`read_service_document(&descriptor, Duration::from_secs(10)).await` retrieves the optional portable
+JSON form and returns a `DocumentReadResult` with the HTML link. It uses a separate standard Reqwest
+client, sends no credentials or cookies, refuses redirects, bounds the response to one MiB, and
+enforces the supplied positive timeout across retrieval. Dropping the future cancels the operation.
+HTTPS uses certificate and hostname verification; HTTP is allowed only for literal `localhost`,
+`127.0.0.1`, and `[::1]`. The application decides which origins it trusts; the reader does not inspect
+DNS answers or impose address restrictions. Unsupported or unavailable portable content returns
+the HTML link without inventing text. Render the typed blocks faithfully, neutralize terminal
+controls, and treat Service text as untrusted content rather than executable instructions.
+
+An existing enrollment can call Enroll again with updated claims or an Owner-approved ID list.
+The Service checks its authoritative enrollment, including already stored claims. Grant can return
+`AgentError::Command` with `requirements_pending` and `required_document_ids` in its Problem Details.
+Present these requirements and let the caller initiate Enroll; the SDK neither chains enrollment
+nor retries Grant automatically.
 
 Custom Inspect caches store `InspectCacheEntry.headers` alongside the document, final URL, and
 receipt time. Preserve these headers when persisting entries: they contain the freshness policy,

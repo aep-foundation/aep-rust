@@ -1,4 +1,5 @@
 mod assertions;
+mod documents;
 mod hosted_agent;
 mod hosted_service;
 mod platform;
@@ -129,6 +130,9 @@ fn validate_request(request: &AdapterRequest, role: &str) -> Result<(), String> 
 }
 
 async fn evaluate(request: &AdapterRequest) -> Result<bool, String> {
+    if request.vector.category == "service-documents" {
+        return documents::evaluate(request).await;
+    }
     if request.role == "platform" {
         return platform::evaluate(request).await;
     }

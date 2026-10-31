@@ -39,6 +39,17 @@ The crate provides equivalent parse and validation functions for claims, enrollm
 grant, revoke, Problem Details, idempotency metadata, credential responses, client assertions, and
 OpenAPI AEP security metadata.
 
+`InspectDocument.service_documents`, `EnrollRequest.acknowledged_document_ids`, and
+`ProblemDetails.required_document_ids` model the Service Documents extension. Native validation
+enforces the seven-document and 32-character ID bounds, unique IDs and representation media types,
+and the required HTML representation. Unknown document types and additive members are accepted;
+unknown enrollment requirements are rejected.
+
+`parse_portable_service_document(bytes, expected_id)` validates the full portable content, including
+its exact ID, supported blocks, Unicode text limits, total block count, nesting depth, and one-MiB
+bound. Unsupported blocks reject the representation rather than silently removing content.
+The Core crate does not retrieve documents or acknowledge them; retrieval belongs to `aep-agent`.
+
 ## Assertions and identity
 
 `sign_client_assertion` and `verify_client_assertion` support the required EdDSA and ES256

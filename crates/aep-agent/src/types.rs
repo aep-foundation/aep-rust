@@ -194,6 +194,7 @@ pub struct CommandResult<T> {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct EnrollOptions {
+    pub acknowledged_document_ids: Option<Vec<String>>,
     pub claims: Option<ClaimValues>,
     pub idempotency_key: Option<String>,
 }

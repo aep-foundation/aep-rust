@@ -70,6 +70,39 @@ or the complete `401` AEP challenge response.
 The default `ReqwestTransport` requires Tokio and TLS 1.3 or later for HTTPS. Applications using
 another runtime supply an `HttpTransport` with equivalent HTTPS, redirect and response-size controls.
 
+## Repeated enrollment decisions
+
+Valid Enroll requests evaluate the enrollment policy, including requests for an existing Agent.
+Policies consult their own authoritative storage when deciding whether to accept an update.
+Accepted updates merge supplied claims while preserving identity, creation time, lifecycle status,
+and issued credentials. A rejected decision leaves the stored enrollment unchanged;
+`update_existing: false` returns it unchanged.
+
+In `EnrollmentDecision`, `owner_action_required`, `requirements_pending`, and
+`verification_pending` use `Option`: `None` preserves the stored value on a repeat and defaults
+to `false` or an empty list on initial enrollment. `Some` replaces the value, including
+`Some(false)` and `Some(vec![])`. Stored enrollment records retain concrete values.
+
+## Service Documents
+
+Set `ServiceOptions.extensions` to include `aep_core::SERVICE_DOCUMENTS_EXTENSION` and populate
+`service_documents` with the advertised descriptors. Each descriptor needs a unique ID and an HTML
+link; portable JSON is optional. Host the representations anonymously. Document types are open
+strings; `aep_core::SERVICE_DOCUMENT_TYPES` lists the preferred values.
+
+Persist `EnrollmentRecord.acknowledged_document_ids` and `required_document_ids` in custom stores.
+Acknowledged IDs accumulate only from explicit declarations of known documents. The Enroll response
+echoes only the current declaration, including an empty list; omission never implies acceptance.
+A new required document does not invalidate an otherwise valid, explicitly supplied declaration.
+Grant checks remaining requirements and returns HTTP 422 `requirements_unmet` before credential
+issuance. A previously satisfied document can require another decision by adding its ID to the
+record's `required_document_ids`; explicit acknowledgement clears that requirement.
+
+Repeated enrollment preserves lifecycle status, original timestamps, unrelated claims, and issued
+credentials. The enrollment policy still decides whether to apply updates, leave the record
+unchanged, or reject the request. Store implementations define concurrency guarantees; the SDK
+does not add a locking contract. Document IDs identify documents, not immutable content versions.
+
 ## Grant Types
 
 Register each advertised Grant Type with a `GrantTypeDefinition` and a `GrantTypeHandler`. The

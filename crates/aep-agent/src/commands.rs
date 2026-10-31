@@ -23,14 +23,21 @@ impl Session {
         options: EnrollOptions,
     ) -> Result<CommandResult<EnrollResponse>, AgentError> {
         let (inspection, identity, signer) = self.command_context(&Command::Enroll, true).await?;
-        let required = inspection
-            .document
-            .claims
-            .as_ref()
-            .map_or(&[][..], |claims| claims.required.as_slice());
-        let missing = aep_core::missing_required_claim_names(required, options.claims.as_ref());
-        if !missing.is_empty() {
-            return Err(AgentError::claims(missing));
+        if options.acknowledged_document_ids.is_some()
+            && !inspection
+                .document
+                .extensions
+                .as_ref()
+                .is_some_and(|extensions| {
+                    extensions
+                        .supported
+                        .iter()
+                        .any(|value| value == aep_core::SERVICE_DOCUMENTS_EXTENSION)
+                })
+        {
+            return Err(AgentError::InvalidConfiguration(
+                "Service does not advertise the Service Documents extension".to_owned(),
+            ));
         }
         let key = self
             .idempotency_key(
@@ -42,25 +49,35 @@ impl Session {
             )
             .await?;
         let body = EnrollRequest {
+            acknowledged_document_ids: options.acknowledged_document_ids,
             agent_did: identity.agent_did.clone(),
             claims: options.claims,
             idempotency_key: Some(key.clone()),
             additional: Default::default(),
         };
         validate_enroll_request(&body).map_err(aep_core::CoreError::from)?;
-        self.execute_command(
-            CommandRequest {
-                inspection: &inspection,
-                identity: &identity,
-                signer: signer.as_ref(),
-                command: &Command::Enroll,
-                method: Method::POST,
-                body: Some(&body),
-                idempotency_key: Some(&key),
-            },
-            parse_enroll_response,
-        )
-        .await
+        let result = self
+            .execute_command(
+                CommandRequest {
+                    inspection: &inspection,
+                    identity: &identity,
+                    signer: signer.as_ref(),
+                    command: &Command::Enroll,
+                    method: Method::POST,
+                    body: Some(&body),
+                    idempotency_key: Some(&key),
+                },
+                parse_enroll_response,
+            )
+            .await?;
+        if result.body.status != AgentStatus::Rejected
+            && result.body.acknowledged_document_ids != body.acknowledged_document_ids
+        {
+            return Err(AgentError::Credential(
+                "AEP document acknowledgement does not match the request".to_owned(),
+            ));
+        }
+        Ok(result)
     }
 
     pub async fn status(&self) -> Result<CommandResult<StatusResponse>, AgentError> {

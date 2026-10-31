@@ -3,6 +3,7 @@
 mod claims;
 mod constants;
 mod did_web;
+mod documents;
 mod error;
 mod http;
 mod inspect;
@@ -16,6 +17,7 @@ mod validation;
 pub use claims::*;
 pub use constants::*;
 pub use did_web::*;
+pub use documents::*;
 pub use error::*;
 pub use http::*;
 pub use inspect::*;

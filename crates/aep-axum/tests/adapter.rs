@@ -122,6 +122,8 @@ async fn exposes_the_authenticated_principal_to_axum_handlers() {
 fn test_service(enrolled: bool) -> Arc<Service> {
     let now = fixed_time();
     let records = enrolled.then(|| EnrollmentRecord {
+        acknowledged_document_ids: Vec::new(),
+        required_document_ids: Vec::new(),
         agent_did: agent_did().to_owned(),
         claims: Default::default(),
         created_at: now,

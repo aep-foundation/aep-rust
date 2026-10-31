@@ -337,6 +337,144 @@ fn enrolls_reports_status_and_replays_an_existing_lifecycle() {
 }
 
 #[test]
+fn policy_metadata_distinguishes_omitted_false_and_empty() {
+    block_on(async {
+        for initial in [true, false] {
+            for value in [None, Some(false), Some(true)] {
+                let store = Arc::new(MemoryEnrollmentStore::default());
+                let original = EnrollmentRecord {
+                    acknowledged_document_ids: Vec::new(),
+                    required_document_ids: Vec::new(),
+                    agent_did: agent_did().to_owned(),
+                    claims: ClaimValues::default(),
+                    created_at: fixed_time() - time::Duration::hours(1),
+                    owner_action_required: true,
+                    requirements_pending: vec!["review".to_owned()],
+                    since: fixed_time() - time::Duration::hours(1),
+                    status: AgentStatus::Suspended,
+                    updated_at: fixed_time() - time::Duration::hours(1),
+                    verification_pending: vec!["contact.email".to_owned()],
+                };
+                if !initial {
+                    store.save(original.clone()).await.expect("seed");
+                }
+                let mut options =
+                    ServiceOptions::new(service_did(), Arc::new(RecordingVerifier::default()));
+                options.clock = Some(Arc::new(FixedClock(fixed_time())));
+                options.enrollment_store = Some(store.clone());
+                options.enrollment_policy =
+                    Some(Arc::new(StaticEnrollmentPolicy::new(EnrollmentDecision {
+                        owner_action_required: value,
+                        requirements_pending: value.map(|_| Vec::new()),
+                        verification_pending: value.map(|_| Vec::new()),
+                        ..EnrollmentDecision::default()
+                    })));
+                let service = Service::new(options).expect("service");
+                let result = service
+                    .enroll(enroll_request(), idempotent("metadata", "metadata"))
+                    .await
+                    .expect("enroll");
+                assert_enrollment_status(
+                    &result,
+                    if initial {
+                        AgentStatus::Active
+                    } else {
+                        AgentStatus::Suspended
+                    },
+                );
+                let saved = store
+                    .find(agent_did())
+                    .await
+                    .expect("find")
+                    .expect("record");
+                assert_eq!(saved.owner_action_required, value.unwrap_or(!initial));
+                if value.is_none() && !initial {
+                    assert_eq!(saved.requirements_pending, original.requirements_pending);
+                    assert_eq!(saved.verification_pending, original.verification_pending);
+                } else {
+                    assert!(saved.requirements_pending.is_empty());
+                    assert!(saved.verification_pending.is_empty());
+                }
+                if !initial {
+                    assert_eq!(saved.created_at, original.created_at);
+                    assert_eq!(saved.since, original.since);
+                    assert_eq!(saved.status, original.status);
+                }
+            }
+        }
+    });
+}
+
+#[test]
+fn repeated_policy_can_merge_reject_or_leave_unchanged() {
+    block_on(async {
+        for decision in [
+            EnrollmentDecision {
+                owner_action_required: Some(true),
+                requirements_pending: Some(vec!["review".to_owned()]),
+                verification_pending: Some(vec!["email".to_owned()]),
+                ..EnrollmentDecision::default()
+            },
+            EnrollmentDecision {
+                status: EnrollmentDecisionStatus::Rejected,
+                ..EnrollmentDecision::default()
+            },
+            EnrollmentDecision {
+                update_existing: false,
+                ..EnrollmentDecision::default()
+            },
+        ] {
+            let store = Arc::new(MemoryEnrollmentStore::default());
+            let original = EnrollmentRecord {
+                acknowledged_document_ids: Vec::new(),
+                required_document_ids: Vec::new(),
+                agent_did: agent_did().to_owned(),
+                claims: ClaimValues {
+                    contact_email: Some("owner@example.com".to_owned()),
+                    ..ClaimValues::default()
+                },
+                created_at: fixed_time() - time::Duration::hours(1),
+                owner_action_required: false,
+                requirements_pending: Vec::new(),
+                since: fixed_time() - time::Duration::hours(1),
+                status: AgentStatus::Pending,
+                updated_at: fixed_time() - time::Duration::hours(1),
+                verification_pending: Vec::new(),
+            };
+            store.save(original.clone()).await.expect("seed");
+            let mut options =
+                ServiceOptions::new(service_did(), Arc::new(RecordingVerifier::default()));
+            options.clock = Some(Arc::new(FixedClock(fixed_time())));
+            options.claims.required = vec![ClaimName::ContactEmail];
+            options.enrollment_store = Some(store.clone());
+            options.enrollment_policy =
+                Some(Arc::new(StaticEnrollmentPolicy::new(decision.clone())));
+            let service = Service::new(options).expect("service");
+            let response = service.enroll(br#"{"agent_did":"did:web:agent.example","claims":{"person.first_name":"Owner"}}"#, idempotent("update", "update")).await.expect("update");
+            let saved = store
+                .find(agent_did())
+                .await
+                .expect("find")
+                .expect("record");
+            if decision.status == EnrollmentDecisionStatus::Rejected {
+                assert_problem(&response, ErrorCode::EnrollmentFailed, 403);
+                assert_eq!(saved, original);
+            } else if !decision.update_existing {
+                assert_enrollment_status(&response, AgentStatus::Pending);
+                assert_eq!(saved, original);
+            } else {
+                assert_enrollment_status(&response, AgentStatus::Pending);
+                assert_eq!(saved.claims.contact_email, original.claims.contact_email);
+                assert_eq!(saved.claims.person_first_name.as_deref(), Some("Owner"));
+                assert!(saved.owner_action_required);
+                assert_eq!(saved.requirements_pending, vec!["review"]);
+                assert_eq!(saved.verification_pending, vec!["email"]);
+            }
+        }
+    });
+}
+
+#[test]
 fn applies_command_idempotency_and_dispatches_grant_and_revoke() {
     block_on(async {
         let test = test_service();
@@ -672,6 +810,7 @@ fn coalesces_concurrent_idempotent_operations() {
                     }
                     Ok(ServiceResponse {
                         body: ResponseBody::Enroll(EnrollResponse {
+                            acknowledged_document_ids: None,
                             additional: BTreeMap::new(),
                             owner_action_required: None,
                             requirements_pending: None,
@@ -810,4 +949,348 @@ fn agent_did() -> &'static str {
 
 fn service_did() -> &'static str {
     "did:web:service.example"
+}
+
+fn document_service(
+    required: &[&str],
+    store: Arc<MemoryEnrollmentStore>,
+    handler: Arc<RecordingGrantHandler>,
+    policy: EnrollmentDecision,
+) -> Arc<Service> {
+    let mut options = ServiceOptions::new(service_did(), Arc::new(RecordingVerifier::default()));
+    options.clock = Some(Arc::new(FixedClock(fixed_time())));
+    options.enrollment_store = Some(store);
+    options.enrollment_policy = Some(Arc::new(StaticEnrollmentPolicy::new(policy)));
+    options.claims.required = vec![ClaimName::ContactEmail];
+    options.extensions = vec![SERVICE_DOCUMENTS_EXTENSION.into()];
+    options.service_documents = Some(
+        required
+            .iter()
+            .map(|id| ServiceDocument {
+                id: (*id).into(),
+                document_type: "terms_of_service".into(),
+                title: (*id).into(),
+                enrollment: DocumentEnrollment::Required,
+                representations: vec![DocumentRepresentation {
+                    media_type: "text/html".into(),
+                    url: format!("https://service.example/{id}"),
+                }],
+            })
+            .collect(),
+    );
+    options.grant_types = vec![GrantTypeDefinition {
+        config: None,
+        grant_type: GrantType::ApiKey,
+        handler: Some(handler),
+    }];
+    Service::new(options).unwrap()
+}
+
+#[test]
+fn grant_idempotency_precedes_changed_enrollment_requirements() {
+    block_on(async {
+        for (missing_claim, missing_document) in [(true, false), (false, true), (true, true)] {
+            let store = Arc::new(MemoryEnrollmentStore::default());
+            let handler = Arc::new(RecordingGrantHandler::default());
+            let service = document_service(
+                &["terms"],
+                store.clone(),
+                handler.clone(),
+                EnrollmentDecision::default(),
+            );
+            let enrollment = service
+                .enroll(
+                    br#"{"agent_did":"did:web:agent.example","claims":{"contact.email":"owner@example.com"},"acknowledged_document_ids":["terms"]}"#,
+                    idempotent("enroll", "enroll-key"),
+                )
+                .await
+                .unwrap();
+            assert_eq!(enrollment.status, 200);
+            let original = store.find(agent_did()).await.unwrap().unwrap();
+            let request = br#"{"grant_type":"api-key"}"#;
+            let first = service
+                .grant(request, idempotent("first", "grant-key"))
+                .await
+                .unwrap();
+            assert_eq!(first.status, 200);
+
+            let mut changed = original.clone();
+            if missing_claim {
+                changed.claims.contact_email = None;
+            }
+            if missing_document {
+                changed.required_document_ids = vec!["terms".into()];
+            }
+            store.save(changed).await.unwrap();
+            let replay = service
+                .grant(request, idempotent("replay", "grant-key"))
+                .await
+                .unwrap();
+            assert_eq!(replay, first);
+            let conflict = service
+                .grant(
+                    br#"{"grant_type":"api-key","requested_scopes":["other"]}"#,
+                    idempotent("conflict", "grant-key"),
+                )
+                .await
+                .unwrap();
+            assert_problem(&conflict, ErrorCode::IdempotencyConflict, 409);
+            let blocked = service
+                .grant(request, idempotent("new-request", "new-key"))
+                .await
+                .unwrap();
+            assert_problem(&blocked, ErrorCode::RequirementsUnmet, 422);
+            assert_eq!(handler.grants.lock().unwrap().len(), 1);
+
+            store.save(original).await.unwrap();
+            let blocked_replay = service
+                .grant(request, idempotent("blocked-replay", "new-key"))
+                .await
+                .unwrap();
+            assert_eq!(blocked_replay, blocked);
+            let recovered = service
+                .grant(request, idempotent("recovered", "recovered-key"))
+                .await
+                .unwrap();
+            assert_eq!(recovered.status, 200);
+            assert_eq!(handler.grants.lock().unwrap().len(), 2);
+        }
+    });
+}
+
+#[test]
+fn document_declarations_preserve_history_and_defer_new_requirements_to_grant() {
+    block_on(async {
+        let store = Arc::new(MemoryEnrollmentStore::default());
+        let handler = Arc::new(RecordingGrantHandler::default());
+        let service = document_service(
+            &["terms", "new-notice"],
+            store.clone(),
+            handler.clone(),
+            EnrollmentDecision::default(),
+        );
+        let missing = service
+            .enroll(
+                br#"{"agent_did":"did:web:agent.example"}"#,
+                idempotent("missing", "missing"),
+            )
+            .await
+            .unwrap();
+        assert_problem(&missing, ErrorCode::RequirementsUnmet, 422);
+        let ResponseBody::Problem(details) = missing.body else {
+            panic!("problem");
+        };
+        assert_eq!(
+            details.required_document_ids,
+            Some(vec!["terms".into(), "new-notice".into()])
+        );
+        assert_eq!(
+            details.requirements_pending,
+            Some(vec!["contact.email".into(), "service_documents".into()])
+        );
+        assert!(store.find(agent_did()).await.unwrap().is_none());
+        let partial = br#"{"agent_did":"did:web:agent.example","claims":{"contact.email":"owner@example.com","person.first_name":"Owner"},"acknowledged_document_ids":["terms","retired"]}"#;
+        let first = service
+            .enroll(partial, idempotent("first", "first"))
+            .await
+            .unwrap();
+        assert_eq!(
+            first.body.to_json().unwrap()["acknowledged_document_ids"],
+            json!(["terms", "retired"])
+        );
+        let original = store.find(agent_did()).await.unwrap().unwrap();
+        assert_eq!(original.acknowledged_document_ids, vec!["terms"]);
+        let replay = service
+            .enroll(partial, idempotent("retry", "first"))
+            .await
+            .unwrap();
+        assert_eq!(
+            first.body.to_json().unwrap(),
+            replay.body.to_json().unwrap()
+        );
+        assert_eq!(store.find(agent_did()).await.unwrap().unwrap(), original);
+        let conflict = service
+            .enroll(enroll_request(), idempotent("conflict", "first"))
+            .await
+            .unwrap();
+        assert_problem(&conflict, ErrorCode::IdempotencyConflict, 409);
+        assert_eq!(store.find(agent_did()).await.unwrap().unwrap(), original);
+        let grant = service
+            .grant(br#"{"grant_type":"api-key"}"#, idempotent("grant", "grant"))
+            .await
+            .unwrap();
+        assert_problem(&grant, ErrorCode::RequirementsUnmet, 422);
+        assert_eq!(
+            grant.body.to_json().unwrap()["required_document_ids"],
+            json!(["new-notice"])
+        );
+        assert!(handler.grants.lock().unwrap().is_empty());
+        let empty = service
+            .enroll(
+                br#"{"agent_did":"did:web:agent.example","acknowledged_document_ids":[]}"#,
+                idempotent("empty", "empty"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            empty.body.to_json().unwrap()["acknowledged_document_ids"],
+            json!([])
+        );
+        assert_eq!(
+            store
+                .find(agent_did())
+                .await
+                .unwrap()
+                .unwrap()
+                .acknowledged_document_ids,
+            vec!["terms"]
+        );
+        let omitted = service
+            .enroll(
+                br#"{"agent_did":"did:web:agent.example"}"#,
+                idempotent("omitted", "omitted"),
+            )
+            .await
+            .unwrap();
+        assert_problem(&omitted, ErrorCode::RequirementsUnmet, 422);
+        let update = service.enroll(br#"{"agent_did":"did:web:agent.example","claims":{"contact.email":"updated@example.com"},"acknowledged_document_ids":["new-notice"]}"#,idempotent("update","update")).await.unwrap();
+        assert_eq!(
+            update.body.to_json().unwrap()["acknowledged_document_ids"],
+            json!(["new-notice"])
+        );
+        let mut stored = store.find(agent_did()).await.unwrap().unwrap();
+        assert_eq!(stored.created_at, original.created_at);
+        assert_eq!(stored.since, original.since);
+        assert_eq!(
+            stored.claims.person_first_name,
+            original.claims.person_first_name
+        );
+        assert_eq!(
+            stored.claims.contact_email.as_deref(),
+            Some("updated@example.com")
+        );
+        stored.required_document_ids = vec!["terms".into()];
+        store.save(stored).await.unwrap();
+        assert_problem(
+            &service
+                .grant(
+                    br#"{"grant_type":"api-key"}"#,
+                    idempotent("renew-grant", "renew-grant"),
+                )
+                .await
+                .unwrap(),
+            ErrorCode::RequirementsUnmet,
+            422,
+        );
+        service
+            .enroll(
+                br#"{"agent_did":"did:web:agent.example","acknowledged_document_ids":["terms"]}"#,
+                idempotent("renew", "renew"),
+            )
+            .await
+            .unwrap();
+        assert!(
+            store
+                .find(agent_did())
+                .await
+                .unwrap()
+                .unwrap()
+                .required_document_ids
+                .is_empty()
+        );
+        let grant = service
+            .grant(br#"{"grant_type":"api-key"}"#, idempotent("ready", "ready"))
+            .await
+            .unwrap();
+        assert_eq!(grant.status, 200);
+        assert_eq!(handler.grants.lock().unwrap().len(), 1);
+        let omitted = service
+            .enroll(
+                br#"{"agent_did":"did:web:agent.example"}"#,
+                idempotent("satisfied", "satisfied"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(omitted.status, 200);
+        assert!(
+            omitted
+                .body
+                .to_json()
+                .unwrap()
+                .get("acknowledged_document_ids")
+                .is_none()
+        );
+    });
+}
+
+#[test]
+fn document_updates_obey_service_policy_and_preserve_unrelated_lifecycle() {
+    block_on(async {
+        for status in [
+            AgentStatus::Pending,
+            AgentStatus::Suspended,
+            AgentStatus::Terminated,
+            AgentStatus::Unavailable,
+        ] {
+            for decision in [
+                EnrollmentDecision::default(),
+                EnrollmentDecision {
+                    update_existing: false,
+                    ..Default::default()
+                },
+                EnrollmentDecision {
+                    status: EnrollmentDecisionStatus::Rejected,
+                    ..Default::default()
+                },
+            ] {
+                let store = Arc::new(MemoryEnrollmentStore::default());
+                let original = EnrollmentRecord {
+                    acknowledged_document_ids: vec!["terms".into()],
+                    required_document_ids: vec!["terms".into()],
+                    agent_did: agent_did().into(),
+                    claims: ClaimValues {
+                        contact_email: Some("owner@example.com".into()),
+                        ..Default::default()
+                    },
+                    created_at: fixed_time() - time::Duration::hours(1),
+                    updated_at: fixed_time() - time::Duration::hours(1),
+                    since: fixed_time() - time::Duration::hours(1),
+                    status,
+                    owner_action_required: true,
+                    requirements_pending: vec!["review".into()],
+                    verification_pending: vec!["email".into()],
+                };
+                store.save(original.clone()).await.unwrap();
+                let service = document_service(
+                    &["terms"],
+                    store.clone(),
+                    Arc::new(RecordingGrantHandler::default()),
+                    decision.clone(),
+                );
+                let response = service.enroll(br#"{"agent_did":"did:web:agent.example","acknowledged_document_ids":["terms"]}"#,idempotent("update","update")).await.unwrap();
+                let stored = store.find(agent_did()).await.unwrap().unwrap();
+                if decision.status == EnrollmentDecisionStatus::Rejected
+                    || !decision.update_existing
+                {
+                    assert_eq!(stored, original);
+                    assert_eq!(
+                        response.status,
+                        if decision.status == EnrollmentDecisionStatus::Rejected {
+                            403
+                        } else {
+                            200
+                        }
+                    );
+                } else {
+                    assert_eq!(stored.status, original.status);
+                    assert_eq!(stored.created_at, original.created_at);
+                    assert_eq!(stored.since, original.since);
+                    assert_eq!(stored.requirements_pending, original.requirements_pending);
+                    assert_eq!(stored.verification_pending, original.verification_pending);
+                    assert_eq!(stored.owner_action_required, original.owner_action_required);
+                    assert!(stored.required_document_ids.is_empty());
+                }
+            }
+        }
+    });
 }

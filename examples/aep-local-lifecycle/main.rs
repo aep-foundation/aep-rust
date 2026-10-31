@@ -53,6 +53,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let enrollment = session
         .enroll(EnrollOptions {
+            acknowledged_document_ids: None,
             claims: Some(ClaimValues {
                 contact_email: Some("buyer@example.com".to_owned()),
                 ..ClaimValues::default()

@@ -1347,7 +1347,7 @@ async fn role_behavior(request: &AdapterRequest, role: &str) -> Result<bool, Str
                 .get("idempotency_key")
                 .and_then(Value::as_str)
                 .ok_or_else(|| "Enroll idempotency key is missing".to_owned())?;
-            let (response, unchanged) =
+            let (response, unchanged, policy_evaluated) =
                 crate::role::repeated_existing(agent_did, since, idempotency_key).await?;
             let expected_status = request
                 .case
@@ -1356,7 +1356,8 @@ async fn role_behavior(request: &AdapterRequest, role: &str) -> Result<bool, Str
                 .and_then(|value| value.get("body"))
                 .and_then(|value| value.get("status"))
                 .and_then(Value::as_str);
-            Ok(unchanged
+            Ok(unchanged != expected::<bool>(request, "record_replaced")?
+                && policy_evaluated == expected::<bool>(request, "policy_evaluated")?
                 && response.status == 200
                 && matches!(response.body, aep_service::ResponseBody::Enroll(enrollment)
                     if enrollment.status.as_str() == expected_status.unwrap_or_default()))

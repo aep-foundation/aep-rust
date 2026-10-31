@@ -1,6 +1,9 @@
 use std::{
     collections::{BTreeMap, VecDeque},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 use aep_agent::{
@@ -16,10 +19,10 @@ use aep_core::{
 };
 use aep_service::{
     AuthenticatedCommandOptions, ClientAssertionVerificationContext, ClientAssertionVerifier,
-    CredentialAuthenticationInput, EnrollmentRecord, EnrollmentStore, GrantContext,
-    GrantTypeDefinition, GrantTypeHandler, IdempotentCommandOptions, MemoryEnrollmentStore,
-    ProtectedResourceAuthentication, ProtectedResourceRequest, Service, ServiceError,
-    ServiceOptions,
+    CredentialAuthenticationInput, EnrollmentDecision, EnrollmentPolicy, EnrollmentRecord,
+    EnrollmentStore, GrantContext, GrantTypeDefinition, GrantTypeHandler, IdempotentCommandOptions,
+    MemoryEnrollmentStore, ProtectedResourceAuthentication, ProtectedResourceRequest, Service,
+    ServiceError, ServiceOptions,
 };
 use async_trait::async_trait;
 use http::{HeaderMap, HeaderValue, Method, StatusCode, header};
@@ -102,6 +105,17 @@ pub fn signed_service_fixture() -> Result<ServiceFixture, String> {
     Ok(ServiceFixture {
         service: authentication_service()?.0,
     })
+}
+
+pub fn document_service_options() -> Result<ServiceOptions, String> {
+    let key = aep_core::ClientAssertionSigningKey::es256_from_bytes(&[13; 32])
+        .map_err(|error| error.to_string())?;
+    let mut options = ServiceOptions::new(
+        SERVICE_DID,
+        Arc::new(SignedAssertionVerifier(key.verifying_key())),
+    );
+    options.clock = Some(Arc::new(FixedServiceClock(fixed_time()?)));
+    Ok(options)
 }
 
 pub fn authentication_service()
@@ -395,12 +409,31 @@ impl ServiceFixture {
     }
 }
 
+struct UnchangedEnrollmentPolicy(Arc<AtomicUsize>);
+
+#[async_trait]
+impl EnrollmentPolicy for UnchangedEnrollmentPolicy {
+    async fn decide(
+        &self,
+        _request: &aep_core::EnrollRequest,
+        _now: OffsetDateTime,
+    ) -> Result<EnrollmentDecision, ServiceError> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Ok(EnrollmentDecision {
+            update_existing: false,
+            ..Default::default()
+        })
+    }
+}
+
 pub async fn repeated_existing(
     agent_did: &str,
     since: OffsetDateTime,
     idempotency_key: &str,
-) -> Result<(aep_service::ServiceResponse, bool), String> {
+) -> Result<(aep_service::ServiceResponse, bool, bool), String> {
     let record = EnrollmentRecord {
+        acknowledged_document_ids: Vec::new(),
+        required_document_ids: Vec::new(),
         agent_did: agent_did.to_owned(),
         claims: Default::default(),
         created_at: since,
@@ -413,14 +446,21 @@ pub async fn repeated_existing(
     };
     let store =
         Arc::new(MemoryEnrollmentStore::new([record.clone()]).map_err(|error| error.to_string())?);
-    let fixture = service_fixture_with(agent_did, store.clone())?;
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut options = ServiceOptions::new(
+        SERVICE_DID,
+        Arc::new(AssertionVerifier(agent_did.to_owned())),
+    );
+    options.clock = Some(Arc::new(FixedServiceClock(fixed_time()?)));
+    options.enrollment_store = Some(store.clone());
+    options.enrollment_policy = Some(Arc::new(UnchangedEnrollmentPolicy(calls.clone())));
+    let service = Service::new(options).map_err(|error| error.to_string())?;
     let request = serde_json::to_vec(&json!({
         "agent_did": agent_did,
         "idempotency_key": idempotency_key,
     }))
     .map_err(|error| error.to_string())?;
-    let response = fixture
-        .service
+    let response = service
         .enroll(&request, idempotent("repeated-enroll", idempotency_key))
         .await
         .map_err(|error| error.to_string())?;
@@ -429,7 +469,7 @@ pub async fn repeated_existing(
         .await
         .map_err(|error| error.to_string())?
         == Some(record);
-    Ok((response, unchanged))
+    Ok((response, unchanged, calls.load(Ordering::SeqCst) == 1))
 }
 
 fn idempotent(assertion: &str, key: &str) -> IdempotentCommandOptions {
@@ -1304,6 +1344,8 @@ fn wire_service_with_store(
     options.clock = Some(Arc::new(FixedServiceClock(now)));
     options.enrollment_store = Some(Arc::new(
         MemoryEnrollmentStore::new([EnrollmentRecord {
+            acknowledged_document_ids: Vec::new(),
+            required_document_ids: Vec::new(),
             agent_did: agent_did.to_owned(),
             claims: Default::default(),
             created_at: now,
@@ -1453,6 +1495,7 @@ pub async fn agent_command(
     let result = match command {
         "enroll" => session
             .enroll(aep_agent::EnrollOptions {
+                acknowledged_document_ids: None,
                 claims: body
                     .get("claims")
                     .map(|claims| serde_json::from_value(claims.clone()))

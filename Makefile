@@ -10,7 +10,9 @@ coverage:
 	cargo llvm-cov --workspace --all-features --locked --exclude aep-conformance --lcov --output-path lcov.info
 
 dependency:
-	cargo deny check
+	cargo deny --locked check
+	python3 scripts/test-advisory-exception.py
+	python3 scripts/check-advisory-exception.py
 
 docs:
 	RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps --locked

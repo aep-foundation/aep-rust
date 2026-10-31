@@ -359,6 +359,7 @@ fn unusable_field_values_are_refused() {
         assert!(matches!(
             session
                 .enroll(EnrollOptions {
+                    acknowledged_document_ids: None,
                     claims: None,
                     idempotency_key: Some("key\nwith-break".to_owned()),
                 })
@@ -381,6 +382,7 @@ fn empty_idempotency_keys_are_refused() {
                 matches!(
                     session
                         .enroll(EnrollOptions {
+                            acknowledged_document_ids: None,
                             claims: None,
                             idempotency_key: Some(key.to_owned()),
                         })
