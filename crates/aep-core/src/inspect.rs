@@ -15,6 +15,31 @@ pub fn parse_inspect_document(data: &[u8]) -> Result<InspectDocument, ParseError
 
 pub fn validate_inspect_document(document: &InspectDocument) -> Result<(), ValidationError> {
     let mut issues = Vec::new();
+    if let Some(documents) = &document.service_documents {
+        if documents.is_empty()
+            || !document.extensions.as_ref().is_some_and(|value| {
+                value
+                    .supported
+                    .iter()
+                    .any(|value| value == crate::SERVICE_DOCUMENTS_EXTENSION)
+            })
+        {
+            issues.push(issue(
+                "$.service_documents",
+                "Expected nonempty documents and the Service Documents extension.",
+            ));
+        }
+        crate::documents::validate_document_ids(
+            &documents.iter().map(|d| d.id.clone()).collect::<Vec<_>>(),
+            "$.service_documents",
+            &mut issues,
+        );
+        for descriptor in documents {
+            if let Err(error) = crate::validate_service_document(descriptor) {
+                issues.extend(error.issues);
+            }
+        }
+    }
     if !version_pattern().is_match(&document.aep_version) {
         issues.push(issue(
             "$.aep_version",

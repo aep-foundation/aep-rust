@@ -70,14 +70,3 @@ pub enum AgentError {
     #[error(transparent)]
     Url(#[from] url::ParseError),
 }
-
-impl AgentError {
-    pub(crate) fn claims(missing: Vec<ClaimName>) -> Self {
-        let names = missing
-            .iter()
-            .map(ClaimName::as_str)
-            .collect::<Vec<_>>()
-            .join(", ");
-        Self::ClaimRequirements { missing, names }
-    }
-}

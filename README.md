@@ -74,7 +74,7 @@ appropriate only for development.
 
 ## Development
 
-Rust 1.88 or newer is required. Run the complete merge gate with:
+Rust 1.88 or newer and Python 3.11 or newer are required for development. Run the complete merge gate with:
 
 ```sh
 make verify

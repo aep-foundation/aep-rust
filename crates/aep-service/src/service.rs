@@ -185,12 +185,21 @@ impl Service {
         )?;
         let agent_did = claims.sub;
         let now = self.clock.now();
+        let service = self.clone();
         let result = self
             .idempotency_store
             .execute(
                 input,
                 Box::new(move || {
                     async move {
+                        let missing = missing_required_claim_names(
+                            &service.configuration.claims.required,
+                            Some(&enrollment.claims),
+                        );
+                        let documents = service.missing_documents(Some(&enrollment));
+                        if !missing.is_empty() || !documents.is_empty() {
+                            return Ok(document_requirements(missing, documents));
+                        }
                         let context = GrantContext {
                             agent_did,
                             enrollment,
@@ -386,46 +395,162 @@ impl Service {
 
     async fn execute_enroll(
         &self,
-        request: EnrollRequest,
+        mut request: EnrollRequest,
     ) -> Result<ServiceResponse, ServiceError> {
+        if !self
+            .configuration
+            .inspect_document
+            .extensions
+            .as_ref()
+            .is_some_and(|extensions| {
+                extensions
+                    .supported
+                    .iter()
+                    .any(|value| value == aep_core::SERVICE_DOCUMENTS_EXTENSION)
+            })
+        {
+            request.acknowledged_document_ids = None;
+        }
         if let Some(existing) = self.enrollment_store.find(&request.agent_did).await? {
-            return Ok(success(ResponseBody::Enroll(enroll_response(&existing))));
+            return self.update_enrollment(request, existing).await;
         }
         let missing = missing_required_claim_names(
             &self.configuration.claims.required,
             request.claims.as_ref(),
         );
-        if !missing.is_empty() {
-            // CORE-ERR-009 pairs `requirements_unmet` with 422.
-            let mut response = problem(ErrorCode::RequirementsUnmet, 422);
-            let ResponseBody::Problem(details) = &mut response.body else {
-                unreachable!();
-            };
-            details.requirements_pending = Some(
-                missing
-                    .into_iter()
-                    .map(|claim| claim.as_str().to_owned())
-                    .collect(),
-            );
-            return Ok(response);
+        let documents = if request.acknowledged_document_ids.is_none() {
+            self.missing_documents(None)
+        } else {
+            Vec::new()
+        };
+        if !missing.is_empty() || !documents.is_empty() {
+            return Ok(document_requirements(missing, documents));
         }
         let now = self.clock.now();
         let decision = self.enrollment_policy.decide(&request, now).await?;
         let record = self
             .enrollment_store
             .save(EnrollmentRecord {
+                acknowledged_document_ids: if decision.status == EnrollmentDecisionStatus::Rejected
+                {
+                    vec![]
+                } else {
+                    self.accepted_documents(&[], request.acknowledged_document_ids.as_deref())
+                },
+                required_document_ids: vec![],
                 agent_did: request.agent_did,
                 claims: request.claims.unwrap_or_default(),
                 created_at: now,
-                owner_action_required: decision.owner_action_required,
-                requirements_pending: decision.requirements_pending,
+                owner_action_required: decision.owner_action_required.unwrap_or(false),
+                requirements_pending: decision.requirements_pending.unwrap_or_default(),
                 since: now,
                 status: decision_status(decision.status),
                 updated_at: now,
-                verification_pending: decision.verification_pending,
+                verification_pending: decision.verification_pending.unwrap_or_default(),
             })
             .await?;
-        Ok(success(ResponseBody::Enroll(enroll_response(&record))))
+        Ok(success(ResponseBody::Enroll(enroll_response(
+            &record,
+            request.acknowledged_document_ids,
+        ))))
+    }
+
+    async fn update_enrollment(
+        &self,
+        request: EnrollRequest,
+        mut existing: EnrollmentRecord,
+    ) -> Result<ServiceResponse, ServiceError> {
+        let now = self.clock.now();
+        let decision = self.enrollment_policy.decide(&request, now).await?;
+        if decision.status == EnrollmentDecisionStatus::Rejected {
+            return Ok(problem(ErrorCode::EnrollmentFailed, 403));
+        }
+        if !decision.update_existing {
+            return Ok(success(ResponseBody::Enroll(enroll_response(
+                &existing,
+                request.acknowledged_document_ids,
+            ))));
+        }
+        if let Some(claims) = request.claims {
+            let mut merged: BTreeMap<String, Value> =
+                serde_json::from_value(serde_json::to_value(&existing.claims)?)?;
+            merged.extend(serde_json::from_value::<BTreeMap<String, Value>>(
+                serde_json::to_value(claims)?,
+            )?);
+            existing.claims = serde_json::from_value(serde_json::to_value(merged)?)?;
+        }
+        let missing = missing_required_claim_names(
+            &self.configuration.claims.required,
+            Some(&existing.claims),
+        );
+        let documents = if request.acknowledged_document_ids.is_none() {
+            self.missing_documents(Some(&existing))
+        } else {
+            vec![]
+        };
+        if !missing.is_empty() || !documents.is_empty() {
+            return Ok(document_requirements(missing, documents));
+        }
+        existing.acknowledged_document_ids = self.accepted_documents(
+            &existing.acknowledged_document_ids,
+            request.acknowledged_document_ids.as_deref(),
+        );
+        existing.required_document_ids.retain(|id| {
+            !request
+                .acknowledged_document_ids
+                .as_ref()
+                .is_some_and(|ids| ids.contains(id))
+        });
+        if let Some(value) = decision.owner_action_required {
+            existing.owner_action_required = value;
+        }
+        if let Some(value) = decision.requirements_pending {
+            existing.requirements_pending = value;
+        }
+        if let Some(value) = decision.verification_pending {
+            existing.verification_pending = value;
+        }
+        existing.updated_at = now;
+        let record = self.enrollment_store.save(existing).await?;
+        Ok(success(ResponseBody::Enroll(enroll_response(
+            &record,
+            request.acknowledged_document_ids,
+        ))))
+    }
+
+    fn missing_documents(&self, record: Option<&EnrollmentRecord>) -> Vec<String> {
+        self.configuration
+            .inspect_document
+            .service_documents
+            .iter()
+            .flatten()
+            .filter(|document| {
+                document.enrollment == aep_core::DocumentEnrollment::Required
+                    && record.is_none_or(|record| {
+                        !record.acknowledged_document_ids.contains(&document.id)
+                            || record.required_document_ids.contains(&document.id)
+                    })
+            })
+            .map(|document| document.id.clone())
+            .collect()
+    }
+
+    fn accepted_documents(&self, existing: &[String], declared: Option<&[String]>) -> Vec<String> {
+        let mut ids = existing.to_vec();
+        for id in declared.unwrap_or_default() {
+            if !ids.contains(id)
+                && self
+                    .configuration
+                    .inspect_document
+                    .service_documents
+                    .iter()
+                    .flatten()
+                    .any(|document| &document.id == id)
+            {
+                ids.push(id.clone());
+            }
+        }
+        ids
     }
 
     async fn authenticate_command(
@@ -560,6 +685,7 @@ fn build_configuration(options: &ServiceOptions) -> Result<ServiceConfiguration,
         ]
     };
     let inspect_document = InspectDocument {
+        service_documents: options.service_documents.clone(),
         aep_version: VERSION.to_owned(),
         authentication: (!options.authentication_methods.is_empty()).then(|| Authentication {
             methods: options.authentication_methods.clone(),
@@ -680,14 +806,39 @@ fn within_value_limits(
     }
 }
 
-fn enroll_response(record: &EnrollmentRecord) -> EnrollResponse {
+fn enroll_response(record: &EnrollmentRecord, declared: Option<Vec<String>>) -> EnrollResponse {
     EnrollResponse {
+        acknowledged_document_ids: if record.status == AgentStatus::Rejected {
+            None
+        } else {
+            declared
+        },
         additional: BTreeMap::new(),
         owner_action_required: record.owner_action_required.then_some(StringBoolean::True),
         requirements_pending: non_empty(&record.requirements_pending),
         status: record.status,
         verification_pending: non_empty(&record.verification_pending),
     }
+}
+
+fn document_requirements(
+    claims: Vec<aep_core::ClaimName>,
+    documents: Vec<String>,
+) -> ServiceResponse {
+    let mut response = problem(ErrorCode::RequirementsUnmet, 422);
+    if let ResponseBody::Problem(details) = &mut response.body {
+        let mut pending: Vec<_> = claims
+            .into_iter()
+            .map(|claim| claim.as_str().to_owned())
+            .collect();
+        if !documents.is_empty() {
+            pending.push("service_documents".to_owned());
+            details.owner_action_required = Some(StringBoolean::True);
+            details.required_document_ids = Some(documents);
+        }
+        details.requirements_pending = Some(pending);
+    }
+    response
 }
 
 fn status_response(record: &EnrollmentRecord) -> StatusResponse {

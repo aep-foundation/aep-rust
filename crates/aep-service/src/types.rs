@@ -18,7 +18,7 @@ use crate::ServiceError;
 pub enum ResponseBody {
     Enroll(aep_core::EnrollResponse),
     Grant(Value),
-    Problem(ProblemDetails),
+    Problem(Box<ProblemDetails>),
     Revoke(aep_core::RevokeResponse),
     Status(aep_core::StatusResponse),
 }
@@ -125,6 +125,8 @@ pub trait CommandIdempotencyStore: Send + Sync {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct EnrollmentRecord {
+    pub acknowledged_document_ids: Vec<String>,
+    pub required_document_ids: Vec<String>,
     pub agent_did: String,
     pub claims: ClaimValues,
     pub created_at: OffsetDateTime,
@@ -144,19 +146,21 @@ pub trait EnrollmentStore: Send + Sync {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct EnrollmentDecision {
-    pub owner_action_required: bool,
-    pub requirements_pending: Vec<String>,
+    pub owner_action_required: Option<bool>,
+    pub requirements_pending: Option<Vec<String>>,
     pub status: EnrollmentDecisionStatus,
-    pub verification_pending: Vec<String>,
+    pub verification_pending: Option<Vec<String>>,
+    pub update_existing: bool,
 }
 
 impl Default for EnrollmentDecision {
     fn default() -> Self {
         Self {
-            owner_action_required: false,
-            requirements_pending: Vec::new(),
+            owner_action_required: None,
+            requirements_pending: None,
             status: EnrollmentDecisionStatus::Active,
-            verification_pending: Vec::new(),
+            verification_pending: None,
+            update_existing: true,
         }
     }
 }
@@ -432,6 +436,7 @@ impl ClaimValueLimits {
 
 #[derive(Clone)]
 pub struct ServiceOptions {
+    pub service_documents: Option<Vec<aep_core::ServiceDocument>>,
     pub allow_insecure_loopback: bool,
     pub authentication_methods: Vec<AuthenticationMethod>,
     pub clock: Option<Arc<dyn Clock>>,
@@ -456,6 +461,7 @@ pub struct ServiceOptions {
 impl ServiceOptions {
     pub fn new(service_did: impl Into<String>, verifier: Arc<dyn ClientAssertionVerifier>) -> Self {
         Self {
+            service_documents: None,
             allow_insecure_loopback: false,
             authentication_methods: Vec::new(),
             clock: None,
@@ -554,11 +560,11 @@ pub(crate) fn problem(code: ErrorCode, status: u16) -> ServiceResponse {
         first.make_ascii_uppercase();
     }
     let title = String::from_utf8(characters).unwrap_or_else(|_| code.as_str().to_owned());
-    let body = ResponseBody::Problem(aep_core::new_problem_details(
+    let body = ResponseBody::Problem(Box::new(aep_core::new_problem_details(
         code,
         title,
         i64::from(status),
-    ));
+    )));
     let mut headers = HeaderMap::new();
     headers.insert(
         http::header::CONTENT_TYPE,

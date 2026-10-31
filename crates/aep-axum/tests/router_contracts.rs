@@ -432,6 +432,8 @@ const SERVICE_DID: &str = "did:web:service.example";
 fn service_with_base(endpoint_base: &str, enrolled: bool) -> Arc<Service> {
     let now = fixed_time();
     let records = enrolled.then(|| EnrollmentRecord {
+        acknowledged_document_ids: Vec::new(),
+        required_document_ids: Vec::new(),
         agent_did: AGENT_DID.to_owned(),
         claims: Default::default(),
         created_at: now,

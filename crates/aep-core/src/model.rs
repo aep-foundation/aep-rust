@@ -276,6 +276,12 @@ pub struct ServiceIdentity {
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct InspectDocument {
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_non_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub service_documents: Option<Vec<crate::ServiceDocument>>,
     pub aep_version: String,
     #[serde(
         default,
@@ -414,6 +420,12 @@ impl fmt::Debug for ClaimValues {
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct EnrollRequest {
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_non_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub acknowledged_document_ids: Option<Vec<String>>,
     pub agent_did: String,
     #[serde(
         default,
@@ -437,6 +449,12 @@ fn owner_action_is_not_true(value: &Option<StringBoolean>) -> bool {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct EnrollResponse {
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_non_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub acknowledged_document_ids: Option<Vec<String>>,
     pub status: AgentStatus,
     #[serde(
         default,
@@ -582,6 +600,12 @@ pub struct ClientAssertionClaims {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct ProblemDetails {
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_non_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub required_document_ids: Option<Vec<String>>,
     #[serde(rename = "type")]
     pub problem_type: String,
     pub title: String,

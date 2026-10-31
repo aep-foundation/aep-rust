@@ -240,6 +240,102 @@ fn inspect_document(authentication: serde_json::Value) -> serde_json::Value {
     document
 }
 
+#[test]
+fn enroll_sends_only_explicit_acknowledgements_and_checks_the_echo() {
+    block_on(async {
+        for (declared, echo, valid) in [
+            (None, None, true),
+            (Some(vec![]), Some(vec![]), true),
+            (
+                Some(vec!["Terms".to_owned()]),
+                Some(vec!["Terms".to_owned()]),
+                true,
+            ),
+            (
+                Some(vec!["Terms".to_owned()]),
+                Some(vec!["terms".to_owned()]),
+                false,
+            ),
+            (Some(vec![]), None, false),
+            (None, Some(vec!["terms".to_owned()]), false),
+        ] {
+            let transport = Arc::new(ScriptedTransport::default());
+            let mut document = inspect_document(serde_json::json!({"methods":["aep-jwt"]}));
+            document["extensions"] = serde_json::json!({"supported":[SERVICE_DOCUMENTS_EXTENSION]});
+            transport.push_json(StatusCode::OK, document);
+            let mut response = serde_json::json!({"status":"active"});
+            if let Some(ids) = echo {
+                response["acknowledged_document_ids"] = serde_json::json!(ids);
+            }
+            transport.push_json(StatusCode::OK, response);
+            let session = client(transport.clone(), Arc::new(RecordingSigner::default()))
+                .service("service.example")
+                .unwrap();
+            let result = session
+                .enroll(EnrollOptions {
+                    acknowledged_document_ids: declared.clone(),
+                    ..Default::default()
+                })
+                .await;
+            assert_eq!(result.is_ok(), valid);
+            let requests = transport.requests.lock().unwrap();
+            assert_eq!(requests.len(), 2);
+            let sent: serde_json::Value = serde_json::from_slice(&requests[1].body).unwrap();
+            assert_eq!(
+                sent.get("acknowledged_document_ids"),
+                declared.map(|ids| serde_json::json!(ids)).as_ref()
+            );
+            assert!(sent.get("claims").is_none());
+        }
+    });
+}
+
+#[test]
+fn grant_exposes_document_requirements_without_enrollment_or_retry() {
+    block_on(async {
+        let transport = Arc::new(ScriptedTransport::default());
+        transport.push_json(
+            StatusCode::OK,
+            inspect_document(serde_json::json!({"methods":["api-key"]})),
+        );
+        transport.push_json(StatusCode::OK, serde_json::json!({"status":"active"}));
+        transport.push_problem(StatusCode::UNPROCESSABLE_ENTITY,serde_json::json!({
+            "type":"urn:aep:error:requirements_unmet","title":"Requirements unmet","status":422,
+            "code":"requirements_unmet","requirements_pending":["contact.email","service_documents"],
+            "required_document_ids":["terms"],"owner_action_required":"true"
+        }));
+        let session = client(transport.clone(), Arc::new(RecordingSigner::default()))
+            .service("service.example")
+            .unwrap();
+        session.identity().await.unwrap();
+        let error = session
+            .grant(GrantOptions {
+                grant_type: Some(GrantType::ApiKey),
+                ..Default::default()
+            })
+            .await
+            .unwrap_err();
+        let AgentError::Command {
+            status,
+            problem: Some(problem),
+        } = error
+        else {
+            panic!("structured error")
+        };
+        assert_eq!(status, 422);
+        assert_eq!(problem.required_document_ids, Some(vec!["terms".into()]));
+        assert_eq!(
+            problem.requirements_pending,
+            Some(vec!["contact.email".into(), "service_documents".into()])
+        );
+        let requests = transport.requests.lock().unwrap();
+        assert_eq!(
+            requests.iter().map(|r| r.url.path()).collect::<Vec<_>>(),
+            vec!["/.well-known/aep", "/aep/status", "/aep/grant"]
+        );
+    });
+}
+
 fn client(transport: Arc<ScriptedTransport>, signer: Arc<RecordingSigner>) -> Arc<Client> {
     let provider = Arc::new(TestIdentityProvider { signer });
     let mut options = ClientOptions::new(provider);
@@ -825,11 +921,6 @@ fn executes_agent_lifecycle_and_uses_then_revokes_credential() {
             .service("service.example/catalog")
             .expect("session");
 
-        let missing = session
-            .enroll(EnrollOptions::default())
-            .await
-            .expect_err("required Claim must fail");
-        assert!(matches!(missing, AgentError::ClaimRequirements { .. }));
         let claims = ClaimValues {
             contact_email: Some("buyer@example.com".to_owned()),
             ..ClaimValues::default()
@@ -837,6 +928,7 @@ fn executes_agent_lifecycle_and_uses_then_revokes_credential() {
         assert_eq!(
             session
                 .enroll(EnrollOptions {
+                    acknowledged_document_ids: None,
                     claims: Some(claims),
                     idempotency_key: Some("enroll-1".to_owned())
                 })
@@ -2058,6 +2150,8 @@ async fn reqwest_transport_reports_connection_and_truncated_body_failures() {
         .send(request(address))
         .await
         .expect_err("incomplete response");
-    assert!(error.to_string().contains("read HTTP response"));
+    // Reqwest can detect the truncated body before returning the response headers.
+    let message = error.to_string();
+    assert!(message.contains("read HTTP response") || message.contains("send HTTP request"));
     server.join().expect("server");
 }

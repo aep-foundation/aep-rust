@@ -28,6 +28,9 @@ pub fn parse_enroll_request(data: &[u8]) -> Result<EnrollRequest, ParseError> {
 
 pub fn validate_enroll_request(value: &EnrollRequest) -> Result<(), ValidationError> {
     let mut issues = Vec::new();
+    if let Some(ids) = &value.acknowledged_document_ids {
+        crate::documents::validate_document_ids(ids, "$.acknowledged_document_ids", &mut issues);
+    }
     require_non_empty(&value.agent_did, "$.agent_did", &mut issues);
     if value.idempotency_key.as_deref() == Some("") {
         issues.push(issue("$.idempotency_key", "Expected a non-empty string."));
@@ -51,6 +54,9 @@ pub fn parse_enroll_response(data: &[u8]) -> Result<EnrollResponse, ParseError> 
 
 pub fn validate_enroll_response(value: &EnrollResponse) -> Result<(), ValidationError> {
     let mut issues = Vec::new();
+    if let Some(ids) = &value.acknowledged_document_ids {
+        crate::documents::validate_document_ids(ids, "$.acknowledged_document_ids", &mut issues);
+    }
     validate_optional_non_empty_unique(
         value.verification_pending.as_deref(),
         "$.verification_pending",
@@ -253,6 +259,7 @@ pub fn new_problem_details(
     status: i64,
 ) -> ProblemDetails {
     ProblemDetails {
+        required_document_ids: None,
         problem_type: format!("urn:aep:error:{}", code.as_str()),
         title: title.into(),
         status,
@@ -283,6 +290,27 @@ fn is_error_code(value: &str) -> bool {
 
 pub fn validate_problem_details(value: &ProblemDetails) -> Result<(), ValidationError> {
     let mut issues = Vec::new();
+    let pending = value
+        .requirements_pending
+        .as_ref()
+        .is_some_and(|values| values.iter().any(|value| value == "service_documents"));
+    if let Some(ids) = &value.required_document_ids {
+        crate::documents::validate_document_ids(ids, "$.required_document_ids", &mut issues);
+    }
+    if (pending || value.required_document_ids.is_some())
+        && (!pending
+            || value
+                .required_document_ids
+                .as_ref()
+                .is_none_or(Vec::is_empty)
+            || value.code != ErrorCode::RequirementsUnmet
+            || value.status != 422)
+    {
+        issues.push(issue(
+            "$.required_document_ids",
+            "Document requirements need IDs, service_documents and HTTP 422 requirements_unmet.",
+        ));
+    }
     if value.problem_type != format!("urn:aep:error:{}", value.code.as_str()) {
         issues.push(issue("$.type", "Expected an AEP error URN matching code."));
     }

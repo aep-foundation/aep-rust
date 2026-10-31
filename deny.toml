@@ -1,5 +1,9 @@
 [advisories]
 yanked = "deny"
+unused-ignored-advisory = "deny"
+ignore = [
+  { id = "RUSTSEC-2026-0387", reason = "Accepted pending a stable jwt-compact signing dependency graph without this advisory; make dependency checks upstream availability." },
+]
 
 [bans]
 multiple-versions = "warn"

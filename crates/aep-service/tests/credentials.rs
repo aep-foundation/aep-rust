@@ -338,6 +338,8 @@ fn context(grant_type: GrantType) -> GrantContext {
     GrantContext {
         agent_did: "did:web:agent.example".to_owned(),
         enrollment: EnrollmentRecord {
+            acknowledged_document_ids: Vec::new(),
+            required_document_ids: Vec::new(),
             agent_did: "did:web:agent.example".to_owned(),
             claims: ClaimValues::default(),
             created_at: now(),
