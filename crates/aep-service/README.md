@@ -9,7 +9,7 @@ authenticates protected resources.
 
 ```toml
 [dependencies]
-aep-service = "0.2"
+aep-service = "0.3"
 ```
 
 ## Create a Service
