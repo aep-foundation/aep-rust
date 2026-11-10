@@ -132,6 +132,7 @@ impl crate::ClientAssertionVerifier for crate::DidWebClientAssertionVerifier {
 pub(crate) enum SelectedAuthorization {
     Aep(String),
     Session(AuthenticationMethod),
+    Malformed,
     Unrelated,
     Unauthenticated,
 }
@@ -202,7 +203,7 @@ pub(crate) fn select_authorization(headers: &HeaderMap) -> Result<SelectedAuthor
         Ok(parsed) if parsed.scheme == CredentialScheme::Basic => {
             Ok(SelectedAuthorization::Session(AuthenticationMethod::Basic))
         }
-        Err(_) if recognized => Err(()),
+        Err(_) if recognized => Ok(SelectedAuthorization::Malformed),
         Ok(_) | Err(_) => Ok(SelectedAuthorization::Unrelated),
     }
 }

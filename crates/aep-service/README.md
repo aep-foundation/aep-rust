@@ -113,8 +113,9 @@ configured.
 
 For built-in credentials, use `stored_api_key_grant_type`, `stored_basic_grant_type`, or
 `stored_oauth_bearer_grant_type` with an issuer callback and a `ServiceCredentialStore`.
-The issuer supplies credential material, expiry, and a unique identifier; API-key secrets and
-Basic passwords require at least 128 bits of entropy. The memory store retains one-way secret
+The issuer supplies credential material, expiry, and a unique identifier; API-key secrets require
+at least 128 bits of entropy. Basic usernames and passwords must be present strings but may be
+empty. The Service chooses its Basic password policy. The memory store retains one-way secret
 verifiers. A custom store receives usable credentials in `save`. API-key stores must retain
 salted hashes or equivalent one-way verifiers; Basic stores must apply strong password-storage
 controls. Protect stored records, honor expiry and revocation, and do not log credential material.

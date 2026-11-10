@@ -1364,7 +1364,7 @@ fn presents_oauth_and_basic_credentials_and_validates_selection() {
                 "oauth",
                 GrantType::OAuthBearer,
                 serde_json::json!({
-                    "access_token": "token", "credential_id": "oauth", "expires_at": "2026-09-01T12:00:00Z", "scopes": null, "token_type": "Bearer"
+                    "access_token": "token", "credential_id": "oauth", "expires_at": "2026-09-01T12:00:00Z", "scopes": null, "token_type": "bEaReR"
                 }),
             ),
             (

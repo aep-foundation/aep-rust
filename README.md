@@ -72,6 +72,15 @@ cargo run -p aep-examples --bin aep-platform-ephemeral
 See the [examples guide](./examples/) for what each process demonstrates and which shortcuts are
 appropriate only for development.
 
+## API-key credentials
+
+For an `api-key` credential, `api_key` is the complete HTTP header value. If a Service returns
+`header: "Authorization"` and `api_key: "Bearer secret"`, the Agent sends exactly
+`Authorization: Bearer secret`. The SDK does not add or remove a prefix, split the value, or trim it.
+Internal spaces and printable ASCII punctuation are allowed; empty values, leading or trailing
+spaces, control characters, and non-ASCII characters are rejected. The selected API-key header
+is also preserved when the caller selects the dedicated AEP carrier.
+
 ## Development
 
 Rust 1.88 or newer and Python 3.11 or newer are required for development. Run the complete merge gate with:

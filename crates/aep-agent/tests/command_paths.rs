@@ -768,7 +768,10 @@ fn stored_credentials_are_checked_before_they_are_presented() {
         let transport = Arc::new(ScriptedTransport::default());
         transport.inspect(&document());
         transport.json(StatusCode::OK, &active());
-        transport.json(StatusCode::OK, &api_key_credential());
+        let mut credential = api_key_credential();
+        credential["api_key"] = json!("Bearer opaque-api-key");
+        credential["header"] = json!("Authorization");
+        transport.json(StatusCode::OK, &credential);
         let session = enrolled(transport).await;
         session
             .grant(GrantOptions {
@@ -796,9 +799,9 @@ fn stored_credentials_are_checked_before_they_are_presented() {
         assert_eq!(
             result
                 .headers
-                .get("x-api-key")
+                .get("Authorization")
                 .map(|value| value.to_str().expect("value")),
-            Some("opaque-api-key")
+            Some("Bearer opaque-api-key")
         );
         let result = session
             .authentication(selection(None, Some(GrantType::ApiKey)))
