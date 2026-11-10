@@ -412,7 +412,7 @@ pub fn validate_oauth_bearer_grant_response(
         &value.scopes,
         &mut issues,
     );
-    if value.token_type != "Bearer" {
+    if !value.token_type.eq_ignore_ascii_case("Bearer") {
         issues.push(issue("$.token_type", "Expected Bearer."));
     }
     result("OAuth Bearer Grant response", issues)
@@ -454,8 +454,6 @@ pub fn parse_basic_grant_response(data: &[u8]) -> Result<BasicGrantResponse, Par
 
 pub fn validate_basic_grant_response(value: &BasicGrantResponse) -> Result<(), ValidationError> {
     let mut issues = Vec::new();
-    require_non_empty(&value.password, "$.password", &mut issues);
-    require_non_empty(&value.username, "$.username", &mut issues);
     if !value.username.is_empty()
         && (value.username.contains(':') || contains_control_character(&value.username))
     {
@@ -469,9 +467,6 @@ pub fn validate_basic_grant_response(value: &BasicGrantResponse) -> Result<(), V
             "$.password",
             "Expected a value without control characters.",
         ));
-    }
-    if value.realm.as_deref() == Some("") {
-        issues.push(issue("$.realm", "Expected a non-empty string."));
     }
     require_credential_fields(
         &value.credential_id,
@@ -563,9 +558,9 @@ fn is_protected_resource_uri(value: &str, allow_insecure_loopback: bool) -> bool
 
 fn valid_api_key_value(value: &str) -> bool {
     !value.is_empty()
-        && value.bytes().all(|byte| {
-            (0x21..=0x7e).contains(&byte) && !matches!(byte, b'"' | b',' | b';' | b'\\')
-        })
+        && !value.starts_with(' ')
+        && !value.ends_with(' ')
+        && value.bytes().all(|byte| (0x20..=0x7e).contains(&byte))
 }
 
 fn contains_control_character(value: &str) -> bool {
@@ -614,7 +609,7 @@ mod tests {
         .expect("OAuth response");
         assert_eq!(response.grant_type(), GrantType::OAuthBearer);
         assert!(parse_api_key_grant_response(
-            br#"{"api_key":"unsafe value","credential_id":"id","expires_at":"2027-01-01T00:00:00Z","header":"X-API-Key"}"#,
+            br#"{"api_key":"unsafe\tvalue","credential_id":"id","expires_at":"2027-01-01T00:00:00Z","header":"X-API-Key"}"#,
         )
         .is_err());
     }
@@ -628,6 +623,36 @@ mod tests {
         problem.requirements_pending = None;
         problem.owner_action_required = Some(StringBoolean::True);
         assert!(validate_problem_details(&problem).is_err());
+    }
+
+    #[test]
+    fn api_key_field_values() {
+        for value in [
+            "k",
+            "Bearer secret",
+            "Basic dXNlcjpwYXNz",
+            "two  spaces",
+            "key,\";\\value",
+        ] {
+            let body = serde_json::json!({"api_key":value,"credential_id":"key","expires_at":"2027-01-01T00:00:00Z","header":"Authorization"});
+            let credential = parse_api_key_grant_response(body.to_string().as_bytes())
+                .expect("valid opaque field value");
+            assert_eq!(credential.api_key, value);
+        }
+        for value in [
+            "",
+            " key",
+            "key ",
+            "key\n",
+            "key\r\nInjected: value",
+            "key\tvalue",
+            "key\0",
+            "key\u{7f}",
+            "kéy",
+        ] {
+            let body = serde_json::json!({"api_key":value,"credential_id":"key","expires_at":"2027-01-01T00:00:00Z","header":"Authorization"});
+            assert!(parse_api_key_grant_response(body.to_string().as_bytes()).is_err());
+        }
     }
 
     #[test]
@@ -738,6 +763,19 @@ mod tests {
 
     #[test]
     fn validates_each_built_in_credential_shape() {
+        for (username, password) in [("", "secret"), ("user", ""), ("", "")] {
+            let value = serde_json::json!({"username":username,"password":password,"realm":"","credential_id":"basic","expires_at":"2027-01-01T00:00:00Z"});
+            parse_basic_grant_response(&serde_json::to_vec(&value).expect("JSON"))
+                .expect("empty Basic values");
+            for field in ["username", "password"] {
+                let mut missing = value.clone();
+                missing.as_object_mut().expect("object").remove(field);
+                assert!(
+                    parse_basic_grant_response(&serde_json::to_vec(&missing).expect("JSON"))
+                        .is_err()
+                );
+            }
+        }
         parse_api_key_grant_response(
             br#"{"api_key":"secret","credential_id":"id","expires_at":"2027-01-01T00:00:00Z","header":"X-API-Key"}"#,
         )
@@ -762,6 +800,27 @@ mod tests {
             additional: Default::default(),
         });
         assert!(validate_built_in_grant_response(&GrantType::ApiKey, &wrong).is_err());
+    }
+
+    #[test]
+    fn accepts_case_insensitive_bearer_token_type() {
+        for token_type in [
+            "Bearer", "bearer", "BEARER", "bEaReR", "Basic", " Bearer", "Bearer ", "Bearer\n", "",
+        ] {
+            let body = serde_json::json!({
+                "access_token": "CaseSensitiveToken", "credential_id": "id",
+                "expires_at": "2027-01-01T00:00:00Z", "token_type": token_type
+            });
+            let response = parse_built_in_grant_response(
+                &GrantType::OAuthBearer,
+                &serde_json::to_vec(&body).expect("JSON"),
+            );
+            assert_eq!(
+                response.is_ok(),
+                matches!(token_type, "Bearer" | "bearer" | "BEARER" | "bEaReR"),
+                "{token_type:?}"
+            );
+        }
     }
 
     #[test]

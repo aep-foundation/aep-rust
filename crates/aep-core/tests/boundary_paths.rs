@@ -107,7 +107,7 @@ fn credential_responses_reject_unusable_credential_material() {
     )));
     assert!(rejected(parse_basic_grant_response(
         br#"{"credential_id":"c","expires_at":"2026-05-28T12:00:00Z","password":"p",
-            "realm":"","username":"u"}"#
+            "realm":5,"username":"u"}"#
     )));
 }
 

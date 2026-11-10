@@ -347,18 +347,16 @@ impl Service {
                 },
             ));
         }
-        if let SelectedAuthorization::Session(method) = &selected
-            && !self.configuration.authentication_methods.contains(method)
-        {
-            return Ok(
-                self.authentication_failure(ErrorCode::UnsupportedAuthenticationMethod, &request)
-            );
-        }
         let input = crate::CredentialAuthenticationInput {
             headers: request.headers.clone(),
             now: self.clock.now(),
         };
-        let mut presented = matches!(selected, SelectedAuthorization::Session(_));
+        let mut presented = matches!(
+            selected,
+            SelectedAuthorization::Session(_) | SelectedAuthorization::Malformed
+        );
+        let mut advertised_presentation = false;
+        let mut matched = None;
         for method in &self.configuration.authentication_methods {
             if method == &AuthenticationMethod::AepJwt {
                 continue;
@@ -366,7 +364,9 @@ impl Service {
             let Some(handler) = self.configuration.grant_handlers.get(method.as_str()) else {
                 continue;
             };
-            presented |= handler.has_presentation(&input).await?;
+            let detected = handler.has_presentation(&input).await?;
+            presented |= detected;
+            advertised_presentation |= detected;
             if let Some(principal) = handler.authenticate(&input).await? {
                 if principal.agent_did.is_empty()
                     || principal.authentication_kind != AuthenticationKind::SessionCredential
@@ -382,8 +382,22 @@ impl Service {
                 if enrollment.status != AgentStatus::Active {
                     return Ok(self.authentication_failure(ErrorCode::NotRecognized, &request));
                 }
-                return Ok(ProtectedResourceAuthentication::Authenticated(principal));
+                if matched.is_some() {
+                    return Ok(self.authentication_failure(ErrorCode::NotRecognized, &request));
+                }
+                matched = Some(principal);
             }
+        }
+        if let Some(principal) = matched {
+            return Ok(ProtectedResourceAuthentication::Authenticated(principal));
+        }
+        if let SelectedAuthorization::Session(method) = &selected
+            && !advertised_presentation
+            && !self.configuration.authentication_methods.contains(method)
+        {
+            return Ok(
+                self.authentication_failure(ErrorCode::UnsupportedAuthenticationMethod, &request)
+            );
         }
         let code = if presented {
             ErrorCode::NotRecognized

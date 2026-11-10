@@ -19,6 +19,17 @@ use time::{Duration, OffsetDateTime};
 
 #[test]
 fn issues_authenticates_and_revokes_built_in_credentials() {
+    for (username, password) in [
+        ("agent", "basic-secret"),
+        ("", "secret"),
+        ("user", ""),
+        ("", ""),
+    ] {
+        check_built_in_credentials(username, password);
+    }
+}
+
+fn check_built_in_credentials(username: &'static str, password: &'static str) {
     block_on(async {
         let store = Arc::new(MemoryServiceCredentialStore::default());
         let oauth = stored_oauth_bearer_grant_type(StoredOAuthBearerGrantTypeOptions {
@@ -62,16 +73,16 @@ fn issues_authenticates_and_revokes_built_in_credentials() {
         .expect("API-key definition");
         let basic = stored_basic_grant_type(StoredBasicGrantTypeOptions {
             config: GrantTypeConfig::default(),
-            issue: Arc::new(|_, context| {
+            issue: Arc::new(move |_, context| {
                 async move {
                     Ok(BasicGrantResponse {
                         additional: BTreeMap::new(),
                         credential_id: "basic-1".to_owned(),
                         expires_at: expiration(context.now),
-                        password: "basic-secret".to_owned(),
+                        password: password.to_owned(),
                         realm: Some("service".to_owned()),
                         scopes: vec!["read".to_owned()],
-                        username: "agent".to_owned(),
+                        username: username.to_owned(),
                     })
                 }
                 .boxed()
@@ -113,7 +124,10 @@ fn issues_authenticates_and_revokes_built_in_credentials() {
                 &basic,
                 headers(
                     header::AUTHORIZATION.as_str(),
-                    &format!("Basic {}", STANDARD.encode("agent:basic-secret")),
+                    &format!(
+                        "Basic {}",
+                        STANDARD.encode(format!("{username}:{password}"))
+                    ),
                 ),
                 "basic-1",
             ),
@@ -190,7 +204,10 @@ fn issues_authenticates_and_revokes_built_in_credentials() {
                 .authenticate(&CredentialAuthenticationInput {
                     headers: headers(
                         header::AUTHORIZATION.as_str(),
-                        &format!("Basic {}", STANDARD.encode("agent:basic-secret")),
+                        &format!(
+                            "Basic {}",
+                            STANDARD.encode(format!("{username}:{password}"))
+                        ),
                     ),
                     now: now(),
                 })

@@ -11,6 +11,7 @@ use aep_service::*;
 use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use ed25519_dalek::SigningKey;
+use futures::FutureExt as _;
 use futures::executor::block_on;
 use http::{HeaderMap, HeaderValue, header};
 use serde_json::{Value, json};
@@ -550,6 +551,162 @@ fn enforces_lifecycle_before_grant() {
             .await
             .expect("Grant response");
         assert_problem(&response, ErrorCode::IdentitySuspended, 403);
+    });
+}
+
+#[test]
+fn authenticates_opaque_authorization_api_keys() {
+    block_on(async {
+        for oauth_enabled in [false, true] {
+            for value in [
+                "Bearer secret",
+                "bearer secret",
+                "Basic secret",
+                "basic secret",
+                "Bearer two words",
+                "key,\";\\value",
+            ] {
+                let store = Arc::new(MemoryServiceCredentialStore::default());
+                let definition = stored_api_key_grant_type(StoredApiKeyGrantTypeOptions {
+                    config: GrantTypeConfig::default(),
+                    store: store.clone(),
+                    issue: Arc::new(move |_, _| {
+                        async move {
+                            Ok(ApiKeyGrantResponse {
+                                api_key: value.to_owned(),
+                                credential_id: "api-one".to_owned(),
+                                expires_at: "2027-01-01T00:00:00Z".to_owned(),
+                                header: "Authorization".to_owned(),
+                                scopes: Vec::new(),
+                                additional: BTreeMap::new(),
+                            })
+                        }
+                        .boxed()
+                    }),
+                })
+                .expect("API-key definition");
+                let mut options =
+                    ServiceOptions::new(service_did(), Arc::new(RecordingVerifier::default()));
+                options.clock = Some(Arc::new(FixedClock(fixed_time())));
+                options.authentication_methods = vec![AuthenticationMethod::ApiKey];
+                options.grant_types = vec![definition];
+                if oauth_enabled {
+                    options
+                        .authentication_methods
+                        .insert(0, AuthenticationMethod::OAuthBearer);
+                    options.grant_types.push(
+                        stored_oauth_bearer_grant_type(StoredOAuthBearerGrantTypeOptions {
+                            config: GrantTypeConfig::default(),
+                            store: store.clone(),
+                            issue: Arc::new(|_, _| {
+                                async {
+                                    Ok(OAuthBearerGrantResponse {
+                                        access_token: "secret".to_owned(),
+                                        credential_id: "oauth".to_owned(),
+                                        expires_at: "2027-01-01T00:00:00Z".to_owned(),
+                                        token_type: "Bearer".to_owned(),
+                                        scopes: Vec::new(),
+                                        additional: BTreeMap::new(),
+                                    })
+                                }
+                                .boxed()
+                            }),
+                        })
+                        .expect("OAuth definition"),
+                    );
+                }
+                let service = Service::new(options).expect("service");
+                let enrolled = service
+                    .enroll(enroll_request(), idempotent("enroll", "enroll"))
+                    .await
+                    .expect("enroll");
+                assert_enrollment_status(&enrolled, AgentStatus::Active);
+                let issued = service
+                    .grant(br#"{"grant_type":"api-key"}"#, idempotent("grant", "grant"))
+                    .await
+                    .expect("grant");
+                assert_eq!(issued.status, 200);
+                let mut headers = HeaderMap::new();
+                headers.insert(
+                    header::AUTHORIZATION,
+                    HeaderValue::from_str(value).expect("field value"),
+                );
+                let request = ProtectedResourceRequest {
+                    headers,
+                    method: http::Method::GET,
+                    url: Url::parse("https://service.example/private").expect("resource"),
+                };
+                let authenticated = service
+                    .authenticate_protected_resource(request.clone())
+                    .await
+                    .expect("authenticate");
+                assert!(
+                    matches!(
+                        authenticated,
+                        ProtectedResourceAuthentication::Authenticated(AuthenticatedPrincipal {
+                            authentication_method: AuthenticationMethod::ApiKey,
+                            ..
+                        })
+                    ),
+                    "{value}"
+                );
+                let mut wrong = request.clone();
+                wrong.headers.insert(
+                    header::AUTHORIZATION,
+                    HeaderValue::from_str(&format!("Bearer {value}")).expect("field value"),
+                );
+                assert!(matches!(
+                    service
+                        .authenticate_protected_resource(wrong)
+                        .await
+                        .expect("wrong key"),
+                    ProtectedResourceAuthentication::Rejected(_)
+                ));
+                if oauth_enabled {
+                    let granted = service
+                        .grant(
+                            br#"{"grant_type":"oauth-bearer"}"#,
+                            idempotent("oauth", "oauth"),
+                        )
+                        .await
+                        .expect("OAuth grant");
+                    assert_eq!(granted.status, 200);
+                    if value == "Bearer secret" || value == "bearer secret" {
+                        let result = service
+                            .authenticate_protected_resource(request.clone())
+                            .await
+                            .expect("ambiguous credential");
+                        assert!(matches!(
+                            result,
+                            ProtectedResourceAuthentication::Rejected(_)
+                        ));
+                    }
+                    service
+                        .revoke(
+                            br#"{"grant_type":"oauth-bearer","credential_id":"oauth"}"#,
+                            idempotent("revoke-oauth", "revoke-oauth"),
+                        )
+                        .await
+                        .expect("revoke OAuth");
+                }
+                let revoked = service
+                    .revoke(
+                        br#"{"grant_type":"api-key","credential_id":"api-one"}"#,
+                        idempotent("revoke", "revoke"),
+                    )
+                    .await
+                    .expect("revoke");
+                assert_eq!(revoked.status, 200);
+                let result = service
+                    .authenticate_protected_resource(request)
+                    .await
+                    .expect("revoked key");
+                let ProtectedResourceAuthentication::Rejected(response) = result else {
+                    panic!("revoked key accepted")
+                };
+                assert_problem(&response, ErrorCode::NotRecognized, 401);
+            }
+        }
     });
 }
 
